@@ -11,21 +11,33 @@ weights_cache="$HOME/.cache/digitalframe_weights.tsv"
 weights_lock="$HOME/.cache/digitalframe_weights.lock"
 listing_cache_dir="$HOME/.cache/digitalframe_listing"
 
+# Disable DPMS/screen blanking. Screensaver "prefer blanking" alone is not
+# enough -- DPMS runs independently and will still power off the monitor on
+# its own timeout even with the screensaver disabled. Re-applied on every
+# launch so it doesn't depend on anything surviving a reboot/relogin.
+DISPLAY=:0 xset s off -dpms 2>/dev/null
+
 # Crash log file for diagnostics
 crash_log="$HOME/.cache/digitalframe_crashes.log"
 breadcrumbs_log="$HOME/.cache/digitalframe_breadcrumbs.log"
 mkdir -p "$(dirname "$crash_log")"
 
+# Rotating buffer of last 500 entries (never grows unbounded)
 log_crash() {
    local msg="$1"
+   local tmp
+   tmp=$(mktemp "$crash_log.tmp.XXXXXX") || return
    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg" >> "$crash_log"
+   tail -500 "$crash_log" > "$tmp" && mv "$tmp" "$crash_log"
 }
 
 # Breadcrumbs: rotating buffer of last 50 operations (never grows unbounded)
 add_breadcrumb() {
    local msg="$1"
+   local tmp
+   tmp=$(mktemp "$breadcrumbs_log.tmp.XXXXXX") || return
    echo "[$(date '+%H:%M:%S')] $msg" >> "$breadcrumbs_log"
-   tail -50 "$breadcrumbs_log" > "$breadcrumbs_log.tmp" && mv "$breadcrumbs_log.tmp" "$breadcrumbs_log"
+   tail -50 "$breadcrumbs_log" > "$tmp" && mv "$tmp" "$breadcrumbs_log"
 }
 
 # Check if image needs EXIF rotation (EXIF:Orientation > 1)
@@ -43,7 +55,6 @@ needs_rotation() {
 shm_dir="/dev/shm/digitalframe_$$"
 mkdir -p "$shm_dir"
 direction_file="$shm_dir/direction"
-feh_sentinel="$shm_dir/feh_sentinel"
 queue_dir="$shm_dir/queue"
 mkdir -p "$queue_dir"
 keys_file="$HOME/.config/feh/keys"
@@ -64,7 +75,9 @@ pause_tmp="$shm_dir/paused_overlay.jpg"
 # of our action_3, which with only one file loaded empties the filelist and
 # makes feh quit immediately (which then tears down the whole script, since
 # the main loop treats feh exiting on its own as "user pressed q"). Explicit
-# blank bindings here unbind them, same as prev_img/next_img below.
+# blank bindings here unbind them, same as prev_img/next_img below. Return
+# defaults to action_0 (feh's --action, unused here) and Escape defaults to
+# quit -- both are unbound the same way so action_4/action_5 actually fire.
 # feh keybindings are global, so save/restore whatever was there before.
 mkdir -p "$HOME/.config/feh"
 keys_existed=0
@@ -77,10 +90,13 @@ prev_img
 next_img
 remove
 delete
-action_1 Left
-action_2 Right
+quit
+action_0
+action_1 Left comma
+action_2 Right period
 action_3 Delete
-action_4 space
+action_4 space Return
+action_5 Escape
 EOF
 
 cleanup() {
@@ -641,26 +657,14 @@ while true; do
          break
       fi
       if ! kill -0 "$feh_pid" 2>/dev/null; then
-         # feh exited. Check if it was ESC (intentional quit) or crash
-         if [ -f "$feh_sentinel" ]; then
-            sentinel_content=$(cat "$feh_sentinel" 2>/dev/null)
-            if [ "$sentinel_content" = "running" ]; then
-               # Sentinel still says "running" = ESC was pressed, user wants to quit
-               add_breadcrumb "USER: Quit via ESC"
-               log_crash "USER: Quit via ESC"
-               break 2
-            fi
-         fi
-         # Sentinel was overwritten or doesn't exist = either an action was triggered or crash
-         # If direction_file has content, use it; otherwise auto-advance
-         if [ -f "$direction_file" ] && [ -s "$direction_file" ]; then
-            direction=$(cat "$direction_file")
-            break
-         else
-            log_crash "MAIN: feh exited unexpectedly (PID $feh_pid), skipping to next photo"
-            force_direction="next"
-            break
-         fi
+         # feh exited on its own without writing a direction (crash, bad
+         # file, X11 hiccup) -- ESC no longer causes this, since quit is
+         # unbound and Escape is routed through action_5 like the other
+         # keys instead. Treat any other unexpected exit as non-fatal and
+         # skip to the next photo rather than taking the whole script down.
+         log_crash "MAIN: feh exited unexpectedly (PID $feh_pid), skipping to next photo"
+         force_direction="next"
+         break
       fi
       if [ "$paused" -eq 0 ] && [ $(( SECONDS - start_time )) -ge "$delay" ]; then
          direction="next"
@@ -680,6 +684,13 @@ while true; do
       continue
    fi
 
+   # ESC was pressed - quit the slideshow
+   if [ "$direction" = "quit" ]; then
+      add_breadcrumb "USER: Quit via ESC"
+      log_crash "USER: Quit via ESC"
+      break
+   fi
+
    # zenity blocks here while feh keeps showing the current photo
    # underneath, so a "No"/Escape just resumes the slideshow untouched.
    if [ "$direction" = "delete" ]; then
@@ -697,13 +708,6 @@ while true; do
          start_time=$SECONDS
          continue
       fi
-
-   # ESC was pressed - quit the slideshow
-   if [ "$direction" = "quit" ]; then
-      add_breadcrumb "USER: Quit via ESC"
-      log_crash "USER: Quit via ESC"
-      break
-   fi
    fi
 
    other_slot=$(( 1 - cur_slot ))
