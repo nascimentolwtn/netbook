@@ -65,7 +65,9 @@ pause_tmp="$shm_dir/paused_overlay.jpg"
 # of our action_3, which with only one file loaded empties the filelist and
 # makes feh quit immediately (which then tears down the whole script, since
 # the main loop treats feh exiting on its own as "user pressed q"). Explicit
-# blank bindings here unbind them, same as prev_img/next_img below.
+# blank bindings here unbind them, same as prev_img/next_img below. Return
+# defaults to action_0 (feh's --action, unused here) and Escape defaults to
+# quit -- both are unbound the same way so action_4/action_5 actually fire.
 # feh keybindings are global, so save/restore whatever was there before.
 mkdir -p "$HOME/.config/feh"
 keys_existed=0
@@ -79,10 +81,11 @@ next_img
 remove
 delete
 quit
-action_1 Left
-action_2 Right
+action_0
+action_1 Left comma
+action_2 Right period
 action_3 Delete
-action_4 space
+action_4 space Return
 action_5 Escape
 EOF
 
