@@ -13,11 +13,29 @@ listing_cache_dir="$HOME/.cache/digitalframe_listing"
 
 # Crash log file for diagnostics
 crash_log="$HOME/.cache/digitalframe_crashes.log"
+breadcrumbs_log="$HOME/.cache/digitalframe_breadcrumbs.log"
 mkdir -p "$(dirname "$crash_log")"
 
+# Rotating buffer of last 500 entries (never grows unbounded)
 log_crash() {
    local msg="$1"
    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg" >> "$crash_log"
+   tail -500 "$crash_log" > "$crash_log.tmp" && mv "$crash_log.tmp" "$crash_log"
+}
+
+# Breadcrumbs: rotating buffer of last 50 operations (never grows unbounded)
+add_breadcrumb() {
+   local msg="$1"
+   echo "[$(date '+%H:%M:%S')] $msg" >> "$breadcrumbs_log"
+   tail -50 "$breadcrumbs_log" > "$breadcrumbs_log.tmp" && mv "$breadcrumbs_log.tmp" "$breadcrumbs_log"
+}
+
+# Check if image needs EXIF rotation (EXIF:Orientation > 1)
+needs_rotation() {
+   local file="$1"
+   local orient
+   orient=$(identify -format "%[EXIF:Orientation]" "$file" 2>/dev/null || echo "1")
+   [ "$orient" != "1" ] && [ -n "$orient" ]
 }
 
 # /dev/shm is tmpfs (RAM-backed) on this machine -- scratch files live there
@@ -60,10 +78,12 @@ prev_img
 next_img
 remove
 delete
+quit
 action_1 Left
 action_2 Right
 action_3 Delete
 action_4 space
+action_5 Escape
 EOF
 
 cleanup() {
@@ -101,14 +121,26 @@ label_for() {
 }
 
 resolve_photo() {
-   local file="$1" tmp="$2" out="$3" label
+   local file="$1" tmp="$2" out="$3" label rotate_status
+   if [ ! -f "$file" ]; then
+      echo "$file" > "$out"
+      add_breadcrumb "RESOLVE_PHOTO: $(basename "$file") does not exist - skipping"
+      return 1
+   fi
    label=$(label_for "$file")
+   if needs_rotation "$file"; then
+      rotate_status="rotated"
+   else
+      rotate_status="no-rotate"
+   fi
    if convert "$file" -auto-orient -sample "${screen_res}>" \
         -gravity NorthEast -pointsize 20 -fill white -undercolor '#00000099' \
         -annotate +10+10 "$label" "$tmp" 2>/dev/null; then
       echo "$tmp" > "$out"
+      add_breadcrumb "CONVERT: $(basename "$file") → $rotate_status (success)"
    else
       echo "$file" > "$out"
+      add_breadcrumb "CONVERT: $(basename "$file") → $rotate_status (FAILED, using original)"
    fi
 }
 
@@ -116,11 +148,18 @@ resolve_photo() {
 # which arrow was pressed -- the main loop below does the actual killing,
 # once the replacement window is already up (see the overlap below).
 launch_feh() {
+   local file="$1"
+   if [ ! -f "$file" ]; then
+      add_breadcrumb "FILE_MISSING: $(basename "$file") - skipping"
+      echo "0"
+      return 1
+   fi
    feh -Y -x -q -B black -F -Z \
       --action1 "echo prev > '$direction_file'" \
       --action2 "echo next > '$direction_file'" \
       --action3 "echo delete > '$direction_file'" \
       --action4 "echo pause > '$direction_file'" \
+      --action5 "echo quit > '$direction_file'" \
       "$1" < /dev/null > /dev/null 2>&1 &
    echo $!
 }
@@ -480,7 +519,7 @@ pick_random_photo() {
 # queue_slots > queue_cap gives headroom so a slot is never reused while a
 # still-displayed photo might still reference it.
 run_producer() {
-   local n=0 count photo tmp marker label
+   local n=0 count photo tmp marker label rotate_status
    log_crash "PRODUCER: started (PID $$)"
    while true; do
       count=$(find "$queue_dir" -maxdepth 1 -name 'ready_*' 2>/dev/null | wc -l)
@@ -492,14 +531,21 @@ run_producer() {
       tmp="$queue_dir/slot_$(( n % queue_slots )).jpg"
       marker=$(printf 'ready_%08d' "$n")
       label=$(label_for "$photo")
+      if needs_rotation "$photo"; then
+         rotate_status="rotated"
+      else
+         rotate_status="no-rotate"
+      fi
       {
          echo "$photo"
          if convert "$photo" -auto-orient -sample "${screen_res}>" \
               -gravity NorthEast -pointsize 20 -fill white -undercolor '#00000099' \
               -annotate +10+10 "$label" "$tmp" 2>/dev/null; then
             echo "$tmp"
+            add_breadcrumb "QUEUE: slot_$((n % queue_slots)) $(basename "$photo") → $rotate_status (OK)"
          else
             echo "$photo"
+            add_breadcrumb "QUEUE: slot_$((n % queue_slots)) $(basename "$photo") → $rotate_status (FAILED, fallback)"
          fi
       } > "$queue_dir/.tmp_$marker"
       mv "$queue_dir/.tmp_$marker" "$queue_dir/$marker"
@@ -507,17 +553,22 @@ run_producer() {
    done
 }
 
-# Watchdog: monitors run_producer and feh, logs when they die
+# Watchdog: monitors run_producer, logs only on state changes
 run_watchdog() {
    log_crash "WATCHDOG: started (PID $$)"
+   local last_feh_pid=0 last_producer_pid=0
    while true; do
       sleep 2
       if ! kill -0 "$producer_pid" 2>/dev/null; then
-         log_crash "WATCHDOG: producer died (PID $producer_pid)"
+         if [ "$last_producer_pid" != "$producer_pid" ]; then
+            log_crash "WATCHDOG: producer died (PID $producer_pid)"
+            last_producer_pid="$producer_pid"
+         fi
          break
       fi
-      if ! kill -0 "$feh_pid" 2>/dev/null; then
-         log_crash "WATCHDOG: feh died (PID $feh_pid)"
+      if [ "$feh_pid" != "$last_feh_pid" ]; then
+         last_feh_pid="$feh_pid"
+         log_crash "WATCHDOG: feh restarted (new PID $feh_pid)"
       fi
    done
 }
@@ -579,17 +630,28 @@ log_crash "STARTUP: producer started (PID $producer_pid)"
 run_watchdog &
 watchdog_pid=$!
 
+force_direction=""
 while true; do
-   direction=""
+   if [ -n "$force_direction" ]; then
+      direction="$force_direction"
+      force_direction=""
+   else
+      direction=""
+   fi
    while true; do
       if [ -f "$direction_file" ]; then
          direction=$(cat "$direction_file")
          break
       fi
       if ! kill -0 "$feh_pid" 2>/dev/null; then
-         log_crash "MAIN: feh exited unexpectedly (PID $feh_pid)"
-         # feh exited on its own (q/Escape) -- fall through to desktop
-         break 2
+         # feh exited on its own without writing a direction (crash, bad
+         # file, X11 hiccup) -- ESC no longer causes this, since quit is
+         # unbound and Escape is routed through action_5 like the other
+         # keys instead. Treat any other unexpected exit as non-fatal and
+         # skip to the next photo rather than taking the whole script down.
+         log_crash "MAIN: feh exited unexpectedly (PID $feh_pid), skipping to next photo"
+         force_direction="next"
+         break
       fi
       if [ "$paused" -eq 0 ] && [ $(( SECONDS - start_time )) -ge "$delay" ]; then
          direction="next"
@@ -607,6 +669,13 @@ while true; do
       kill "$old_feh_pid" 2>/dev/null
       start_time=$SECONDS
       continue
+   fi
+
+   # ESC was pressed - quit the slideshow
+   if [ "$direction" = "quit" ]; then
+      add_breadcrumb "USER: Quit via ESC"
+      log_crash "USER: Quit via ESC"
+      break
    fi
 
    # zenity blocks here while feh keeps showing the current photo
@@ -671,8 +740,16 @@ while true; do
    fi
 
    rm -f "$direction_file"
+   add_breadcrumb "DISPLAY: slot_$cur_slot $(basename "$cur_photo")"
    old_feh_pid=$feh_pid
    feh_pid=$(launch_feh "$(apply_pause_overlay "$show_file")")
+   if [ "$feh_pid" -eq 0 ]; then
+      # File is missing, skip to next photo automatically
+      add_breadcrumb "SKIP: file gone, advancing..."
+      force_direction="next"
+      sleep 0.2
+      continue
+   fi
    sleep 0.6
    kill "$old_feh_pid" 2>/dev/null
    start_time=$SECONDS
