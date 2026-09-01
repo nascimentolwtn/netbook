@@ -11,6 +11,15 @@ weights_cache="$HOME/.cache/digitalframe_weights.tsv"
 weights_lock="$HOME/.cache/digitalframe_weights.lock"
 listing_cache_dir="$HOME/.cache/digitalframe_listing"
 
+# Crash log file for diagnostics
+crash_log="$HOME/.cache/digitalframe_crashes.log"
+mkdir -p "$(dirname "$crash_log")"
+
+log_crash() {
+   local msg="$1"
+   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg" >> "$crash_log"
+}
+
 # /dev/shm is tmpfs (RAM-backed) on this machine -- scratch files live there
 # instead of /tmp (a real ext4 partition) so the per-photo downscale/resolve
 # work never touches disk. Even with the lookahead queue below, resident
@@ -58,13 +67,14 @@ action_4 space
 EOF
 
 cleanup() {
-   kill "$producer_pid" "$feh_pid" "$old_feh_pid" 2>/dev/null
+   kill "$producer_pid" "$feh_pid" "$old_feh_pid" "$watchdog_pid" 2>/dev/null
    rm -rf "$shm_dir"
    if [ "$keys_existed" -eq 1 ]; then
       mv "$keys_backup" "$keys_file"
    else
       rm -f "$keys_file"
    fi
+   log_crash "SHUTDOWN: normal exit"
 }
 trap cleanup EXIT
 
@@ -471,6 +481,7 @@ pick_random_photo() {
 # still-displayed photo might still reference it.
 run_producer() {
    local n=0 count photo tmp marker label
+   log_crash "PRODUCER: started (PID $$)"
    while true; do
       count=$(find "$queue_dir" -maxdepth 1 -name 'ready_*' 2>/dev/null | wc -l)
       if [ "$count" -ge "$queue_cap" ]; then
@@ -493,6 +504,21 @@ run_producer() {
       } > "$queue_dir/.tmp_$marker"
       mv "$queue_dir/.tmp_$marker" "$queue_dir/$marker"
       n=$((n + 1))
+   done
+}
+
+# Watchdog: monitors run_producer and feh, logs when they die
+run_watchdog() {
+   log_crash "WATCHDOG: started (PID $$)"
+   while true; do
+      sleep 2
+      if ! kill -0 "$producer_pid" 2>/dev/null; then
+         log_crash "WATCHDOG: producer died (PID $producer_pid)"
+         break
+      fi
+      if ! kill -0 "$feh_pid" 2>/dev/null; then
+         log_crash "WATCHDOG: feh died (PID $feh_pid)"
+      fi
    done
 }
 
@@ -530,7 +556,7 @@ if [ ! -f "$weights_cache" ] || [ ! -f "$listing_cache_dir/index.tsv" ] || [ "$p
    compute_weights_bg
 fi
 
-first_photo=$(pick_random_photo) || { echo "no photos found under $photo_root" >&2; exit 1; }
+first_photo=$(pick_random_photo) || { echo "no photos found under $photo_root" >&2; log_crash "STARTUP: no photos found"; exit 1; }
 record_new_photo "$first_photo"
 resolve_photo "$first_photo" "${slot_tmp[0]}" "${slot_out[0]}"
 show_file=$(cat "${slot_out[0]}")
@@ -540,6 +566,7 @@ paused=0
 
 rm -f "$direction_file"
 feh_pid=$(launch_feh "$show_file")
+log_crash "STARTUP: main started, initial feh PID $feh_pid, photo: $first_photo"
 start_time=$SECONDS
 
 # Only start building the lookahead queue once the first photo is already
@@ -547,6 +574,10 @@ start_time=$SECONDS
 # synchronous pick+resolve above.
 run_producer &
 producer_pid=$!
+log_crash "STARTUP: producer started (PID $producer_pid)"
+
+run_watchdog &
+watchdog_pid=$!
 
 while true; do
    direction=""
@@ -556,6 +587,7 @@ while true; do
          break
       fi
       if ! kill -0 "$feh_pid" 2>/dev/null; then
+         log_crash "MAIN: feh exited unexpectedly (PID $feh_pid)"
          # feh exited on its own (q/Escape) -- fall through to desktop
          break 2
       fi
@@ -617,6 +649,7 @@ while true; do
             orig_path=$(sed -n '1p' <<< "$qline")
             resolved_path=$(sed -n '2p' <<< "$qline")
          else
+            log_crash "MAIN: queue starved, fallback sync resolve"
             # queue ran dry (advancing faster than it can refill) -- fall
             # back to a synchronous pick+resolve, same cost as before
             orig_path=$(pick_random_photo)
