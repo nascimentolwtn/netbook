@@ -9,7 +9,7 @@ queue_cap=10
 queue_slots=24
 weights_cache="$HOME/.cache/digitalframe_weights.tsv"
 weights_lock="$HOME/.cache/digitalframe_weights.lock"
-listing_cache="$HOME/.cache/digitalframe_listing.tsv"
+listing_cache_dir="$HOME/.cache/digitalframe_listing"
 
 # /dev/shm is tmpfs (RAM-backed) on this machine -- scratch files live there
 # instead of /tmp (a real ext4 partition) so the per-photo downscale/resolve
@@ -212,7 +212,6 @@ compute_weights_bg() {
      local files_raw="$tmp.files"
      local direct="$tmp.direct"
      local dirs="$tmp.dirs"
-     local listing_tmp="$listing_cache.tmp.$$"
 
      # The full-tree walk is the expensive part on this slow NTFS/FUSE
      # mount, so it's done exactly once here and reused for both the
@@ -250,31 +249,57 @@ compute_weights_bg() {
 
      # Immediate-children listing (dir or file) for every directory in the
      # tree, so pick_random_photo can read children from this fast local
-     # file instead of running a live `find` against the slow mount at
-     # every level of every single pick -- that live-find cost (multiple
-     # seconds per level on this box) was the main thing slowing down the
-     # background queue-fill producer.
+     # cache instead of running a live `find` against the slow mount at
+     # every level of every single pick. This is INDEXED, not one flat
+     # file: an earlier version stored every "parent\tchild" pair in one
+     # ~12MB file, and a linear awk scan over that (needed once per
+     # directory level per pick) cost ~2s each -- as slow as the live
+     # `find` over FUSE it was meant to replace. Sorting by parent first
+     # makes each directory's children arrive as one contiguous run, so a
+     # single sequential pass can write an index.tsv (path -> numeric id,
+     # small enough to scan in tens of ms) plus one small per-directory
+     # children file, closing each children file before opening the next
+     # -- at most 2 file handles open at once, however many directories
+     # there are.
+     rm -rf "$listing_cache_dir"
+     mkdir -p "$listing_cache_dir"
      { cat "$dirs"; cat "$files_raw"; } \
-        | awk -F/ '{n=NF; parent=$0; sub("/" $n, "", parent); print parent "\t" $0}' > "$listing_tmp"
-     mv "$listing_tmp" "$listing_cache"
+        | awk '{parent=$0; sub(/\/[^/]*$/, "", parent); print parent "\t" $0}' \
+        | LC_ALL=C sort -t $'\t' -k1,1 \
+        | awk -F'\t' -v outdir="$listing_cache_dir" '
+           {
+              if ($1 != prev) {
+                 if (out != "") close(out)
+                 idx++
+                 print $1 "\t" idx >> (outdir "/index.tsv")
+                 out = outdir "/" idx
+                 prev = $1
+              }
+              print $2 > out
+           }
+        '
 
      rm -f "$direct" "$dirs" "$files_raw"
    ) &
 }
 
 # Populates the caller's $entries with the immediate children of $1,
-# preferring the cached listing (fast, local disk) and falling back to a
-# live `find` (slow, hits the FUSE-mounted backup drive) only when the
-# cache is missing or doesn't yet cover this directory -- e.g. a folder
-# just symlinked in since the last background scan.
+# preferring the cached index (fast, local disk, touches only a few KB)
+# and falling back to a live `find` (slow, hits the FUSE-mounted backup
+# drive) only when the cache is missing or doesn't yet cover this
+# directory -- e.g. a folder just symlinked in since the last background
+# scan.
 list_children() {
-   local dir="$1" child
+   local dir="$1" child idx
    entries=()
-   if [ -f "$listing_cache" ]; then
-      while IFS= read -r child; do
-         entries+=("$child")
-      done < <(awk -F'\t' -v want="$dir" '$1==want{print $2}' "$listing_cache")
-      [ "${#entries[@]}" -gt 0 ] && return 0
+   if [ -f "$listing_cache_dir/index.tsv" ]; then
+      idx=$(awk -F'\t' -v want="$dir" '$1==want{print $2; exit}' "$listing_cache_dir/index.tsv")
+      if [ -n "$idx" ] && [ -f "$listing_cache_dir/$idx" ]; then
+         while IFS= read -r child; do
+            entries+=("$child")
+         done < "$listing_cache_dir/$idx"
+         [ "${#entries[@]}" -gt 0 ] && return 0
+      fi
    fi
    while IFS= read -r -d '' child; do
       entries+=("$child")
@@ -481,7 +506,7 @@ record_new_photo() {
 # since the cache was built). Picks before this finishes just fall back to
 # uniform weighting and live `find` (see weighted_pick / list_children),
 # so this never blocks the first photo or the initial queue fill.
-if [ ! -f "$weights_cache" ] || [ ! -f "$listing_cache" ] || [ "$photo_root" -nt "$weights_cache" ]; then
+if [ ! -f "$weights_cache" ] || [ ! -f "$listing_cache_dir/index.tsv" ] || [ "$photo_root" -nt "$weights_cache" ]; then
    compute_weights_bg
 fi
 
