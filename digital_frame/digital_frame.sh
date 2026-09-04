@@ -318,16 +318,36 @@ list_children() {
 # call after call -- /dev/urandom has no such state to desync.
 weighted_pick() {
    local -a cum
-   local total=0 i w path_list
+   local total=0 i w
    local -A w_lookup=()
    if [ -f "$weights_cache" ] && [ "${#entries[@]}" -gt 0 ]; then
-      path_list=$(printf '%s\n' "${entries[@]}")
+      # entries is passed as a process-substitution "file" (FNR==NR side),
+      # not a -v argument -- a leaf folder like Photos_LW has ~4000 files,
+      # and joining that many paths into one -v string blew past Linux's
+      # ~128KB single-argument limit (MAX_ARG_STRLEN), which made awk fail
+      # outright with "argument list too long" on exactly the large flat
+      # folders this cache was supposed to make fast.
       while IFS=$'\t' read -r p w; do
          w_lookup["$p"]="$w"
-      done < <(awk -F'\t' -v paths="$path_list" '
-         BEGIN { n=split(paths, arr, "\n"); for (i=1;i<=n;i++) if (arr[i]!="") want[arr[i]]=1 }
+      done < <(awk -F'\t' '
+         FNR==NR { want[$0]=1; next }
          ($1 in want) { print }
-      ' "$weights_cache")
+      ' <(printf '%s\n' "${entries[@]}") "$weights_cache")
+   fi
+   # A leaf folder (all files, no subdirectories) never matches anything
+   # in weights_cache -- only directories are counted there -- so every
+   # entry falls back to weight 1 regardless. Detecting that up front and
+   # doing a single O(1) uniform pick skips the O(n) cumulative-sum
+   # construction below, which for a folder with thousands of files (e.g.
+   # Photos_LW's ~4000) was itself becoming the dominant per-pick cost
+   # once the cache lookups were fixed. Directory-only levels (the ones
+   # that actually need weighting) have far fewer entries, so paying the
+   # O(n) cost there is negligible.
+   if [ "${#w_lookup[@]}" -eq 0 ]; then
+      local n=${#entries[@]}
+      local ur=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d " " | awk "{print \$1 % $n}")
+      echo "${entries[$ur]}"
+      return 0
    fi
    for i in "${!entries[@]}"; do
       w="${w_lookup[${entries[$i]}]:-1}"
