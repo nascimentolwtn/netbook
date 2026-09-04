@@ -9,6 +9,7 @@ queue_cap=10
 queue_slots=24
 weights_cache="$HOME/.cache/digitalframe_weights.tsv"
 weights_lock="$HOME/.cache/digitalframe_weights.lock"
+listing_cache="$HOME/.cache/digitalframe_listing.tsv"
 
 # /dev/shm is tmpfs (RAM-backed) on this machine -- scratch files live there
 # instead of /tmp (a real ext4 partition) so the per-photo downscale/resolve
@@ -182,47 +183,49 @@ do_delete() {
 # path; picks at every level are weighted by those counts once available,
 # and fall back to uniform (weight 1) for any entry not yet counted (e.g. a
 # folder just symlinked in) until the first background count finishes.
-declare -A weights
-weights_mtime=0
-
-reload_weights_if_changed() {
-   [ -f "$weights_cache" ] || return
-   local m
-   m=$(stat -c %Y "$weights_cache" 2>/dev/null) || return
-   [ "$m" = "$weights_mtime" ] && return
-   weights=()
-   while IFS=$'\t' read -r path count; do
-      [ -n "$path" ] && weights["$path"]="$count"
-   done < "$weights_cache"
-   weights_mtime="$m"
-}
-
+#
+# Every call site invokes pick_random_photo via `$(...)` to capture its
+# echoed path, which forks a subshell -- a bash associative array loaded
+# inside that subshell (or anything it calls) is gone the moment the call
+# returns, so there is no point trying to cache the parsed weights table
+# across picks in a shell variable; weighted_pick instead does one targeted
+# awk pass per directory level, filtering weights_cache down to just the
+# handful of entries at that level, which is both simpler and faster than
+# parsing the whole (multi-thousand-line) file into bash on every call.
 compute_weights_bg() {
    ( mkdir -p "$HOME/.cache"
-     # a lock older than 10 minutes (computation normally takes ~80s) means
-     # whatever created it died without cleaning up -- e.g. the netbook lost
-     # power mid-computation -- so treat it as stale rather than block
-     # recomputation forever
+     # a lock older than 10 minutes (computation normally takes a couple
+     # minutes on this NTFS/FUSE-mounted backup drive) means whatever
+     # created it died without cleaning up -- e.g. the netbook lost power
+     # mid-computation -- so treat it as stale rather than block forever
      if [ -d "$weights_lock" ]; then
         lock_age=$(( $(date +%s) - $(stat -c %Y "$weights_lock" 2>/dev/null || echo 0) ))
         [ "$lock_age" -gt 600 ] && rmdir "$weights_lock" 2>/dev/null
      fi
      if ! mkdir "$weights_lock" 2>/dev/null; then
         # another instance is already computing; leave it alone rather
-        # than duplicate ~80s of work
+        # than duplicate the work
         exit 0
      fi
      trap 'rmdir "$weights_lock" 2>/dev/null' EXIT
      local tmp="$weights_cache.tmp.$$"
+     local files_raw="$tmp.files"
      local direct="$tmp.direct"
      local dirs="$tmp.dirs"
+     local listing_tmp="$listing_cache.tmp.$$"
+
+     # The full-tree walk is the expensive part on this slow NTFS/FUSE
+     # mount, so it's done exactly once here and reused for both the
+     # per-directory counts below and the listing cache further down,
+     # rather than walking the tree twice.
+     find -L "$photo_root" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.bmp' \) 2>/dev/null > "$files_raw"
 
      # Direct (non-recursive) image counts, one line per directory that
      # directly contains images, keyed by the same $photo_root-prefixed
      # traversal path pick_random_photo itself builds (not a realpath --
      # symlinked folders like archive_fotos need to key consistently with
      # how entries[] is populated below).
-     find -L "$photo_root" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.bmp' \) -printf '%h\n' 2>/dev/null \
+     awk '{parent=$0; sub(/\/[^/]*$/, "", parent); print parent}' "$files_raw" \
         | sort | uniq -c | awk '{c=$1; $1=""; sub(/^ /,""); print c"\t"$0}' > "$direct"
 
      # Every directory in the tree, deepest first (most path separators
@@ -243,23 +246,66 @@ compute_weights_bg() {
            total[parent] += total[$0]
         }
      ' "$direct" "$dirs" > "$tmp"
-
      mv "$tmp" "$weights_cache"
-     rm -f "$direct" "$dirs"
+
+     # Immediate-children listing (dir or file) for every directory in the
+     # tree, so pick_random_photo can read children from this fast local
+     # file instead of running a live `find` against the slow mount at
+     # every level of every single pick -- that live-find cost (multiple
+     # seconds per level on this box) was the main thing slowing down the
+     # background queue-fill producer.
+     { cat "$dirs"; cat "$files_raw"; } \
+        | awk -F/ '{n=NF; parent=$0; sub("/" $n, "", parent); print parent "\t" $0}' > "$listing_tmp"
+     mv "$listing_tmp" "$listing_cache"
+
+     rm -f "$direct" "$dirs" "$files_raw"
    ) &
 }
 
-# Weighted pick among $entries using $weights (falls back to weight 1 for
-# anything not yet counted -- files themselves are never in $weights, only
-# directories, so individual photos within the same folder stay uniform
-# relative to each other, which is what we want). Reads /dev/urandom
-# instead of $RANDOM since $RANDOM is only 15 bits (0-32767), far short of
-# the ~69000+ total weight at the root.
+# Populates the caller's $entries with the immediate children of $1,
+# preferring the cached listing (fast, local disk) and falling back to a
+# live `find` (slow, hits the FUSE-mounted backup drive) only when the
+# cache is missing or doesn't yet cover this directory -- e.g. a folder
+# just symlinked in since the last background scan.
+list_children() {
+   local dir="$1" child
+   entries=()
+   if [ -f "$listing_cache" ]; then
+      while IFS= read -r child; do
+         entries+=("$child")
+      done < <(awk -F'\t' -v want="$dir" '$1==want{print $2}' "$listing_cache")
+      [ "${#entries[@]}" -gt 0 ] && return 0
+   fi
+   while IFS= read -r -d '' child; do
+      entries+=("$child")
+   done < <(find -L "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+}
+
+# Weighted pick among $entries. Looks up weights for just this level's
+# entries via one awk pass over weights_cache (falls back to weight 1 for
+# anything not yet counted -- files themselves are never in weights_cache,
+# only directories, so individual photos within the same folder stay
+# uniform relative to each other, which is what we want). Reads
+# /dev/urandom rather than $RANDOM: pick_random_photo runs in a fresh
+# subshell on every call (see above), and bash subshells forked in quick
+# succession without the parent ever touching $RANDOM in between can
+# inherit identical PRNG state and hand back the very same "random" value
+# call after call -- /dev/urandom has no such state to desync.
 weighted_pick() {
    local -a cum
-   local total=0 i w
+   local total=0 i w path_list
+   local -A w_lookup=()
+   if [ -f "$weights_cache" ] && [ "${#entries[@]}" -gt 0 ]; then
+      path_list=$(printf '%s\n' "${entries[@]}")
+      while IFS=$'\t' read -r p w; do
+         w_lookup["$p"]="$w"
+      done < <(awk -F'\t' -v paths="$path_list" '
+         BEGIN { n=split(paths, arr, "\n"); for (i=1;i<=n;i++) if (arr[i]!="") want[arr[i]]=1 }
+         ($1 in want) { print }
+      ' "$weights_cache")
+   fi
    for i in "${!entries[@]}"; do
-      w="${weights[${entries[$i]}]:-1}"
+      w="${w_lookup[${entries[$i]}]:-1}"
       [ "$w" -le 0 ] 2>/dev/null && w=1
       total=$(( total + w ))
       cum[$i]=$total
@@ -315,6 +361,16 @@ classify_root_entry() {
    esac
 }
 
+# Root only has ~6 entries, but classify_root_entry's readlink -f resolves
+# through the slow FUSE mount, and pick_random_photo hits the root branch
+# on every single call -- computed once here at startup instead of once
+# per pick.
+root_realm_cache="$shm_dir/root_realm.tsv"
+: > "$root_realm_cache"
+while IFS= read -r -d '' re; do
+   printf '%s\t%s\n' "$re" "$(classify_root_entry "$re")" >> "$root_realm_cache"
+done < <(find -L "$photo_root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+
 pick_random_photo() {
    local dir="$photo_root"
    local depth=0 tries=0 entries pick
@@ -326,20 +382,21 @@ pick_random_photo() {
    want=$(next_root_group)
    while [ "$tries" -lt 40 ]; do
       tries=$((tries + 1))
-      entries=()
-      while IFS= read -r -d '' entry; do
-         entries+=("$entry")
-      done < <(find -L "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+      list_children "$dir"
       if [ "${#entries[@]}" -eq 0 ]; then
          dir="$photo_root"
          depth=0
          continue
       fi
-      reload_weights_if_changed
       if [ "$dir" = "$photo_root" ]; then
+         local -A root_realm=()
          local -a group_entries=() e
+         local rp rr
+         while IFS=$'\t' read -r rp rr; do
+            root_realm["$rp"]="$rr"
+         done < "$root_realm_cache"
          for e in "${entries[@]}"; do
-            [ "$(classify_root_entry "$e")" = "$want" ] && group_entries+=("$e")
+            [ "${root_realm[$e]:-other}" = "$want" ] && group_entries+=("$e")
          done
          [ "${#group_entries[@]}" -gt 0 ] && entries=("${group_entries[@]}")
       fi
@@ -419,11 +476,12 @@ record_new_photo() {
    hist_pos=$(( ${#history[@]} - 1 ))
 }
 
-# Recompute folder weights in the background if missing or stale (a folder
-# was added/removed from $photo_root since the cache was built). Picks
-# before this finishes just fall back to uniform (see weighted_pick),
+# Recompute folder weights and the listing cache in the background if
+# either is missing or stale (a folder was added/removed from $photo_root
+# since the cache was built). Picks before this finishes just fall back to
+# uniform weighting and live `find` (see weighted_pick / list_children),
 # so this never blocks the first photo or the initial queue fill.
-if [ ! -f "$weights_cache" ] || [ "$photo_root" -nt "$weights_cache" ]; then
+if [ ! -f "$weights_cache" ] || [ ! -f "$listing_cache" ] || [ "$photo_root" -nt "$weights_cache" ]; then
    compute_weights_bg
 fi
 
