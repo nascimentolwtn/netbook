@@ -171,28 +171,30 @@ do_delete() {
 # level (fast, independent of total library size), not a full-tree walk.
 #
 # Uniform-per-entry selection at every level badly over-represents small
-# folders: a folder with 3 photos gets the same odds at the root as one
-# with 4000+, so a specific photo in the small one could be ~1000x more
-# likely to come up on any given pick. To fix that at the root (where the
-# size gap between symlinked folders is most extreme) without paying for a
-# full recursive count synchronously, per-top-level-folder file counts are
-# computed once in the background (see compute_weights_bg) and cached to
-# disk; root-level picks are weighted by those counts once available, and
-# fall back to uniform (occasionally repeating small folders more often)
-# until the first background count finishes.
-declare -A root_weights
-root_weights_mtime=0
+# folders: e.g. inside archive_fotos, "2017-01-04 UTG Jan2017" (13 photos)
+# used to get the same 1/52 odds as "Album Casal" (29000+ photos), making
+# individual photos in the small folder ~2000x more likely to come up than
+# ones in the big folder -- and this compounds at every nesting level, not
+# just the root. To fix that everywhere without paying for a full recursive
+# count synchronously on each pick, recursive per-directory file counts
+# (covering every directory in the tree, any depth) are computed once in
+# the background (see compute_weights_bg) and cached to disk keyed by full
+# path; picks at every level are weighted by those counts once available,
+# and fall back to uniform (weight 1) for any entry not yet counted (e.g. a
+# folder just symlinked in) until the first background count finishes.
+declare -A weights
+weights_mtime=0
 
 reload_weights_if_changed() {
    [ -f "$weights_cache" ] || return
    local m
    m=$(stat -c %Y "$weights_cache" 2>/dev/null) || return
-   [ "$m" = "$root_weights_mtime" ] && return
-   root_weights=()
-   while IFS=$'\t' read -r name count; do
-      [ -n "$name" ] && root_weights["$name"]="$count"
+   [ "$m" = "$weights_mtime" ] && return
+   weights=()
+   while IFS=$'\t' read -r path count; do
+      [ -n "$path" ] && weights["$path"]="$count"
    done < "$weights_cache"
-   root_weights_mtime="$m"
+   weights_mtime="$m"
 }
 
 compute_weights_bg() {
@@ -212,32 +214,57 @@ compute_weights_bg() {
      fi
      trap 'rmdir "$weights_lock" 2>/dev/null' EXIT
      local tmp="$weights_cache.tmp.$$"
-     : > "$tmp"
-     local d name n
-     for d in "$photo_root"/*/; do
-        name=$(basename "$d")
-        n=$(find -L "$d" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.bmp' \) 2>/dev/null | wc -l)
-        printf '%s\t%s\n' "$name" "$n" >> "$tmp"
-     done
+     local direct="$tmp.direct"
+     local dirs="$tmp.dirs"
+
+     # Direct (non-recursive) image counts, one line per directory that
+     # directly contains images, keyed by the same $photo_root-prefixed
+     # traversal path pick_random_photo itself builds (not a realpath --
+     # symlinked folders like archive_fotos need to key consistently with
+     # how entries[] is populated below).
+     find -L "$photo_root" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.bmp' \) -printf '%h\n' 2>/dev/null \
+        | sort | uniq -c | awk '{c=$1; $1=""; sub(/^ /,""); print c"\t"$0}' > "$direct"
+
+     # Every directory in the tree, deepest first (most path separators
+     # first) so a single pass can fold each directory's total into its
+     # parent exactly once, after all of that directory's own children
+     # (which sort earlier, being deeper) have already folded into it --
+     # a post-order aggregation done via sort order instead of recursion.
+     find -L "$photo_root" -type d 2>/dev/null \
+        | awk -F/ '{print NF"\t"$0}' | sort -t $'\t' -k1,1nr | cut -f2- > "$dirs"
+
+     awk -F'\t' '
+        FNR==NR { direct[$2]=$1; next }
+        {
+           total[$0] += direct[$0] + 0
+           print $0 "\t" total[$0]
+           parent = $0
+           sub(/\/[^/]*$/, "", parent)
+           total[parent] += total[$0]
+        }
+     ' "$direct" "$dirs" > "$tmp"
+
      mv "$tmp" "$weights_cache"
+     rm -f "$direct" "$dirs"
    ) &
 }
 
-# Weighted pick among root-level entries using root_weights (falls back to
-# weight 1 for anything not yet counted, e.g. a folder just symlinked in).
-# Combines two $RANDOM draws since total weight (~69000+) exceeds $RANDOM's
-# own 0-32767 range.
-weighted_root_pick() {
+# Weighted pick among $entries using $weights (falls back to weight 1 for
+# anything not yet counted -- files themselves are never in $weights, only
+# directories, so individual photos within the same folder stay uniform
+# relative to each other, which is what we want). Reads /dev/urandom
+# instead of $RANDOM since $RANDOM is only 15 bits (0-32767), far short of
+# the ~69000+ total weight at the root.
+weighted_pick() {
    local -a cum
-   local total=0 i w name
+   local total=0 i w
    for i in "${!entries[@]}"; do
-      name=$(basename "${entries[$i]}")
-      w="${root_weights[$name]:-1}"
+      w="${weights[${entries[$i]}]:-1}"
       [ "$w" -le 0 ] 2>/dev/null && w=1
       total=$(( total + w ))
       cum[$i]=$total
    done
-   local r=$(( (RANDOM * 32768 + RANDOM) % total ))
+   local r=$(od -An -tu4 -N4 /dev/urandom 2>/dev/null | tr -d " " | awk "{print \$1 % $total}")
    for i in "${!entries[@]}"; do
       if [ "$r" -lt "${cum[$i]}" ]; then
          echo "${entries[$i]}"
@@ -247,9 +274,56 @@ weighted_root_pick() {
    echo "${entries[-1]}"
 }
 
+# Root-level folders split into two "realms" by where their symlink
+# actually points -- recently synced camera rolls vs. the older bulk
+# archive. archive_fotos alone is ~89% of total weight, so proportional
+# weighting alone would make sync_data photos rare; picks strictly
+# alternate realm at the root instead, then weighted_pick still applies
+# proportionally *within* whichever realm was chosen.
+sync_data_prefix="/media/backup/sync_data"
+archive_prefix="/media/backup/archive"
+
+# Every call site invokes pick_random_photo via `$(...)` to capture its
+# echoed path, which forks a subshell -- any plain shell variable written
+# inside pick_random_photo (or functions it calls) is gone the moment that
+# call returns. The toggle has to survive across calls, so it lives in a
+# file instead of a variable, same pattern as direction_file/weights_lock
+# elsewhere in this script. Single-writer in practice (the one synchronous
+# call before run_producer starts, then only run_producer itself), so a
+# plain read-increment-write needs no locking.
+root_group_toggle_file="$shm_dir/root_group_toggle"
+echo 0 > "$root_group_toggle_file"
+
+next_root_group() {
+   local n
+   n=$(cat "$root_group_toggle_file" 2>/dev/null || echo 0)
+   echo $(( n + 1 )) > "$root_group_toggle_file"
+   if [ $(( n % 2 )) -eq 1 ]; then
+      echo "archive"
+   else
+      echo "sync"
+   fi
+}
+
+classify_root_entry() {
+   local real
+   real=$(readlink -f "$1")
+   case "$real" in
+      "$sync_data_prefix"/*) echo "sync" ;;
+      "$archive_prefix"/*) echo "archive" ;;
+      *) echo "other" ;;
+   esac
+}
+
 pick_random_photo() {
    local dir="$photo_root"
    local depth=0 tries=0 entries pick
+   # Decided once per call (not per retry) -- a dead-end retry (e.g. an
+   # empty leaf folder) re-enters the root branch below, and re-rolling
+   # the realm on every such retry would desync the alternation seen
+   # across consecutive delivered photos.
+   local want
+   want=$(next_root_group)
    while [ "$tries" -lt 40 ]; do
       tries=$((tries + 1))
       entries=()
@@ -261,12 +335,15 @@ pick_random_photo() {
          depth=0
          continue
       fi
+      reload_weights_if_changed
       if [ "$dir" = "$photo_root" ]; then
-         reload_weights_if_changed
-         pick=$(weighted_root_pick)
-      else
-         pick="${entries[RANDOM % ${#entries[@]}]}"
+         local -a group_entries=() e
+         for e in "${entries[@]}"; do
+            [ "$(classify_root_entry "$e")" = "$want" ] && group_entries+=("$e")
+         done
+         [ "${#group_entries[@]}" -gt 0 ] && entries=("${group_entries[@]}")
       fi
+      pick=$(weighted_pick)
       if [ -d "$pick" ] && [ "$depth" -lt "$max_depth" ]; then
          dir="$pick"
          depth=$((depth + 1))
@@ -344,7 +421,7 @@ record_new_photo() {
 
 # Recompute folder weights in the background if missing or stale (a folder
 # was added/removed from $photo_root since the cache was built). Picks
-# before this finishes just fall back to uniform (see weighted_root_pick),
+# before this finishes just fall back to uniform (see weighted_pick),
 # so this never blocks the first photo or the initial queue fill.
 if [ ! -f "$weights_cache" ] || [ "$photo_root" -nt "$weights_cache" ]; then
    compute_weights_bg
