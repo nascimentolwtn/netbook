@@ -27,6 +27,7 @@ keys_backup="${keys_file}.bak_digitalframe"
 # rare, manual actions, so a small synchronous resolve there is fine.
 slot_tmp=("$shm_dir/scaled_0.jpg" "$shm_dir/scaled_1.jpg")
 slot_out=("$shm_dir/resolved_0" "$shm_dir/resolved_1")
+pause_tmp="$shm_dir/paused_overlay.jpg"
 
 # This runs per-photo, so Left/Right need a custom action instead of feh's
 # native next_img/prev_img (useless with only one image loaded at a time).
@@ -52,6 +53,7 @@ delete
 action_1 Left
 action_2 Right
 action_3 Delete
+action_4 space
 EOF
 
 cleanup() {
@@ -107,8 +109,31 @@ launch_feh() {
       --action1 "echo prev > '$direction_file'" \
       --action2 "echo next > '$direction_file'" \
       --action3 "echo delete > '$direction_file'" \
+      --action4 "echo pause > '$direction_file'" \
       "$1" < /dev/null > /dev/null 2>&1 &
    echo $!
+}
+
+# Applies the "PAUSED" indicator (bottom-right -- a different corner from
+# the filename label in the top-right, so they don't overlap) on top of the
+# already-resolved/downscaled $1 when paused=1, otherwise passes it through
+# unchanged. Always reads from the canonical unpaused $show_file rather
+# than a previous paused output, so repeated toggling never stacks the
+# overlay on top of itself. Runs on an already screen_res-sized image, so
+# it's cheap even though it re-runs on every manual advance while paused.
+apply_pause_overlay() {
+   local src="$1"
+   if [ "$paused" -eq 0 ]; then
+      echo "$src"
+      return
+   fi
+   if convert "$src" -gravity SouthEast -pointsize 22 -fill yellow \
+        -undercolor '#00000099' -annotate +10+10 "PAUSED  (space to resume)" \
+        "$pause_tmp" 2>/dev/null; then
+      echo "$pause_tmp"
+   else
+      echo "$src"
+   fi
 }
 
 # Modal confirmation for the Delete key, shown over the fullscreen feh
@@ -331,6 +356,7 @@ resolve_photo "$first_photo" "${slot_tmp[0]}" "${slot_out[0]}"
 show_file=$(cat "${slot_out[0]}")
 cur_photo="$first_photo"
 cur_slot=0
+paused=0
 
 rm -f "$direction_file"
 feh_pid=$(launch_feh "$show_file")
@@ -353,12 +379,23 @@ while true; do
          # feh exited on its own (q/Escape) -- fall through to desktop
          break 2
       fi
-      if [ $(( SECONDS - start_time )) -ge "$delay" ]; then
+      if [ "$paused" -eq 0 ] && [ $(( SECONDS - start_time )) -ge "$delay" ]; then
          direction="next"
          break
       fi
       sleep 0.2
    done
+
+   if [ "$direction" = "pause" ]; then
+      paused=$(( 1 - paused ))
+      rm -f "$direction_file"
+      old_feh_pid=$feh_pid
+      feh_pid=$(launch_feh "$(apply_pause_overlay "$show_file")")
+      sleep 0.6
+      kill "$old_feh_pid" 2>/dev/null
+      start_time=$SECONDS
+      continue
+   fi
 
    # zenity blocks here while feh keeps showing the current photo
    # underneath, so a "No"/Escape just resumes the slideshow untouched.
@@ -422,7 +459,7 @@ while true; do
 
    rm -f "$direction_file"
    old_feh_pid=$feh_pid
-   feh_pid=$(launch_feh "$show_file")
+   feh_pid=$(launch_feh "$(apply_pause_overlay "$show_file")")
    sleep 0.6
    kill "$old_feh_pid" 2>/dev/null
    start_time=$SECONDS
