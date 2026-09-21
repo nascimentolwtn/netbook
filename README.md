@@ -122,8 +122,6 @@ netbook /media/backup/
 └── (raw incoming: 360GB undeduplicated Dalila artwork archive)
 
 Windows PC /mnt/e/dev/
-├── Syncthing/           (backup of netbook /media/backup/sync_data/ — family photos + config)
-├── Site_Dalila/         (website git repo — will pull best photos from archive)
 └── dupe-sweep/          (mvp2-remote scripts)
 ```
 
