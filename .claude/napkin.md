@@ -55,6 +55,9 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 5. **[2026-09-21] `architecture.md` §9.1's `/etc/talkpal/talkpal.env` secret location is superseded — don't re-apply it**
    Do instead: secrets live in `alexa-talk-pal/.env` (gitignored, `python-dotenv`), per ADR 0008. User knowingly accepted that this gets replicated by Syncthing to the Windows PC `/home` backup.
 
+6. **[2026-09-21] Local llama.cpp model on Windows PC (192.168.4.55:11434) — LFM2.5-8B-A1B is very fast but hallucinates**
+   Do instead: during Phase 4 evaluation (backlog §8), benchmark alternative models that trade some speed for accuracy. The current model works for latency testing but may not be suitable for production v2. Model selection (speed vs. accuracy vs. context length) is part of the Phase 4 latency measurement.
+
 ## User Directives
 1. **[2026-09-21] New components for this ecosystem live nested inside this repo, not as sibling repos**
    Do instead: default new component work to a subfolder of `netbook/` (e.g. `netbook/alexa-talk-pal/`) unless told otherwise — user explicitly rejected a sibling `~/git/alexa-talk-pal` location.
