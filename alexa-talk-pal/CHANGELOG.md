@@ -1,0 +1,41 @@
+# Changelog — alexa-talk-pal
+
+Completed planning/decision milestones. Build-phase work (see
+`docs/architecture.md` §11) moves here from the napkin backlog as each item
+finishes.
+
+## 2026-09-21
+
+- **Reviewed prior prototype** at `/mnt/e/dev/alexa-talk-pal` (Windows PC:
+  Ollama + FastAPI + ngrok + AWS Lambda relay). Identified the likely cause
+  of its reported "very difficult to configure inside the Alexa account"
+  pain: the README's Lambda setup steps never mention adding an "Alexa
+  Skills Kit" trigger to the Lambda function — the step that grants Alexa
+  permission to invoke it. Missing it causes a silent authorization
+  failure.
+- **Decided and recorded 6 ADRs** in `docs/adr/`:
+  - 0001 — No local LLM inference on the netbook (hardware-blocked: i686,
+    no AVX, 2GB RAM, Atom N270 — verified via SSH).
+  - 0002 — OpenRouter cloud inference over local Ollama-on-PC (netbook is
+    always-on; PC isn't).
+  - 0003 — Self-hosted HTTPS relay + own signature verification, **not**
+    AWS Lambda ARN (avoids the AWS/IAM trigger-linking step that most
+    likely caused the prior difficulty).
+  - 0004 — ngrok free tier with a claimed persistent dev domain (fixes the
+    prior prototype's documented "URL changes every restart" problem).
+  - 0005 — Single catch-all intent + `AMAZON.SearchQuery` slot (same shape
+    the prior prototype used; flagged as the fiddliest console step either
+    way).
+  - 0006 — Skill stays unpublished / development mode.
+
+## 2026-09-20
+
+- **Hardware feasibility investigated** via direct SSH to the netbook:
+  Intel Atom N270 @ 1.6GHz, 32-bit `i686`, SSE/SSE2/SSSE3 only (no AVX),
+  2GB RAM (~1.5GB available). Confirmed local LLM inference is not viable
+  on this hardware (see ADR 0001).
+- **`docs/architecture.md` written**: full request flow (Echo → Alexa
+  Skills Kit → tunnel → netbook relay → OpenRouter → back), component
+  table, $0/month free-tier cost posture, relay design, resource footprint
+  estimate, model-choice guidance, security considerations, open
+  questions, and a phased build order (Phase 0–4).
