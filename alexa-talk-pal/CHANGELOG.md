@@ -6,6 +6,14 @@ finishes.
 
 ## 2026-09-21
 
+- **Resolved Phase 0 top risk**: `cryptography` is already installed via
+  apt (`python3-cryptography` 2.1.4, native i386 package) on the netbook —
+  no source build needed. All submodules required for Alexa signature
+  verification import cleanly. Recorded as
+  [ADR 0007](docs/adr/0007-cryptography-via-apt-not-pip-build.md), which
+  also documents that venv creation needs `--system-site-packages
+  --without-pip` on this box (ensurepip is broken). No blockers remain for
+  Phase 1.
 - **Reviewed prior prototype** at `/mnt/e/dev/alexa-talk-pal` (Windows PC:
   Ollama + FastAPI + ngrok + AWS Lambda relay). Identified the likely cause
   of its reported "very difficult to configure inside the Alexa account"
