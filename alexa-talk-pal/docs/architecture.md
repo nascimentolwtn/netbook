@@ -39,6 +39,10 @@ The second hardware-driven decision: Alexa custom skills require a **publicly re
 
 **Net:** $0/month, with the binding constraint being **50 questions per day** from OpenRouter's free tier. ngrok's 20k requests/month (~660/day) is far looser, so it never binds first. If 50/day proves too tight in practice, §10 lists the escape hatches — the cheapest being a **one-time** $10 OpenRouter credit purchase that permanently unlocks 1,000/day.
 
+### 1.2 Future option: local LLM inference backend
+
+**Phase 4 option** (post-v1): The relay's inference backend can be made pluggable via configuration. The default stays OpenRouter, but an alternative backend — `llama.cpp` running on the Windows PC host (`<host-pc-ip>`) — could be wired in via an env var or CLI flag (e.g. `INFERENCE_BACKEND=openrouter` vs. `INFERENCE_BACKEND=local_llama:http://<host-pc-ip>:8000`). Benefit: eliminates the 50/day free-tier cap and the free-endpoint training opt-in, at the cost of requiring the always-on PC to also run an inference service. Latency over LAN must be measured to confirm it fits the 8s Alexa deadline. **Not the default plan** — v1 launches with OpenRouter to keep complexity minimal and leverage existing fast-model tuning. If real usage shows 50/day is the blocker, this becomes the escape hatch that doesn't require any paid tier.
+
 ---
 
 ## 2. End-to-End Request Flow
