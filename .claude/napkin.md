@@ -16,28 +16,28 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 1. **[2026-09-21] Decide the OpenRouter free-endpoint training opt-in before creating the account/key**
    Do instead: explicitly choose whether to allow providers to log/train on `:free` prompts (architecture.md §9.6); set the key's spend limit to $0 regardless of the choice.
 
-2. **[2026-09-21] Decide skill locale + language (pt-BR vs en-US) and invocation name before building the interaction model**
-   Do instead: pick these first — locale isn't trivially changed later and drives the interaction model, system-prompt language, and console setup (architecture.md §10.8, §10.1).
-
-3. **[2026-09-21] Write the three fallback spoken lines up front (timeout / daily quota exhausted / tunnel down)**
+2. **[2026-09-21] Write the three fallback spoken lines up front (timeout / daily quota exhausted / tunnel down)**
    Do instead: draft the exact copy before the Phase 1 relay is built, so error paths return real text, not placeholders (architecture.md §10.9).
 
-4. **[2026-09-21] Phase 1: build `talkpal-relay` (Flask, venv `--system-site-packages --without-pip`) + OpenRouter call + quota guard, verify via curl**
+3. **[2026-09-21] Phase 1: build `talkpal-relay` (Flask, venv `--system-site-packages --without-pip`) + OpenRouter call + quota guard, verify via curl**
    Do instead: build with a debug signature-bypass flag first; wire real signature verification next — crypto packaging is resolved (ADR 0007), nothing blocks this anymore.
 
-5. **[2026-09-21] Phase 1: measure real latency across 2–3 candidate `:free` OpenRouter models before picking the default**
+4. **[2026-09-21] Phase 1: measure real latency across 2–3 candidate `:free` OpenRouter models before picking the default**
    Do instead: run ~10 timed queries per candidate (mind the 50/day free cap while testing), pick based on tail latency against the 8s Alexa deadline — not the table in architecture.md §8.2.
 
-6. **[2026-09-21] Phase 1: install systemd units for relay + tunnel (place ngrok permanently, e.g. `/usr/local/bin`), reboot-test for a stable hostname**
+5. **[2026-09-21] Phase 1: install systemd units for relay + tunnel (place ngrok permanently, e.g. `/usr/local/bin`), reboot-test for a stable hostname**
    Do instead: confirm the tunnel survives a reboot with the *same* hostname before touching the Alexa console at all — a rotating hostname was the prior prototype's documented failure mode.
 
-7. **[2026-09-21] Phase 2: build the Alexa interaction model — budget iteration time for `AMAZON.SearchQuery` validator rejections**
-   Do instead: expect several "Save Model" failures (ADR 0005); keep the two-turn fallback (LaunchRequest asks the question, then captures the follow-up) ready if the single-shot slot won't validate.
+6. **[2026-09-21] Phase 2: switch the reused skill's endpoint from Lambda ARN to HTTPS, edit interaction model off `TalkIntent` toward ADR 0005's shape**
+   Do instead: expect several "Save Model" failures (ADR 0005); keep the two-turn fallback (LaunchRequest asks the question, then captures the follow-up) ready if the single-shot slot won't validate. Endpoint switch is per ADR 0003/0009 — same Skill ID, new endpoint config.
 
-8. **[2026-09-21] Phase 3: after a week of real Echo usage, revisit whether 50 requests/day is enough**
+7. **[2026-09-21] Phase 3: after a week of real Echo usage, revisit whether 50 requests/day is enough**
    Do instead: check the OpenRouter dashboard for actual queries/day vs. the cap; if tight, the cheapest escape hatch is a one-time $10 credit purchase (permanently unlocks 1,000/day).
 
-*(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
+8. **[2026-09-21] Phase 4 option: add config/CLI flag to switch relay backend from OpenRouter to local llama.cpp on Windows PC**
+   Do instead: wire the relay to support both backends via env var or CLI arg (e.g. `INFERENCE_BACKEND=openrouter` vs. `INFERENCE_BACKEND=local_llama:http://<host-pc-ip>:8000`). Run `llama.cpp` on the PC host WSL and measure latency over LAN to see if it meets the 8s Alexa deadline without the free-tier limits (50/day cap, training opt-in). Keeps OpenRouter as the default and tested path, but lets v2+ use a private inference backend if desired (architecture.md §1.2, ADR candidate).
+
+*(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem, local-LLM-on-PC option — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
 
 ## Domain Behavior Guardrails
 1. **[2026-09-21] Netbook hardware rules out any local LLM inference — already verified, don't re-check**

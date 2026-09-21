@@ -6,6 +6,13 @@ finishes.
 
 ## 2026-09-21
 
+- **Decided locale + invocation name (backlog item 2)**: reusing the prior
+  prototype's Alexa skill — Skill ID, invocation name `"english talk pal"`,
+  en-US locale. See
+  [ADR 0009](docs/adr/0009-reuse-prior-skill-id-and-invocation-name.md).
+  Skill's endpoint (Lambda ARN) and interaction model (`TalkIntent`) still
+  need updating to match the new architecture — not functional for testing
+  yet.
 - **Confirmed ngrok runs on the netbook**: `linux/386` build (v3.39.11,
   statically-linked ELF, no dynamic deps) downloaded and ran `ngrok
   version` successfully via SSH. No fallback to `cloudflared`/Option C
