@@ -6,6 +6,11 @@ finishes.
 
 ## 2026-09-21
 
+- **Confirmed ngrok runs on the netbook**: `linux/386` build (v3.39.11,
+  statically-linked ELF, no dynamic deps) downloaded and ran `ngrok
+  version` successfully via SSH. No fallback to `cloudflared`/Option C
+  needed (ADR 0004). Binary currently at `/tmp/ngrok` on the netbook;
+  permanent placement + systemd unit is Phase 1 work.
 - **Resolved Phase 0 top risk**: `cryptography` is already installed via
   apt (`python3-cryptography` 2.1.4, native i386 package) on the netbook —
   no source build needed. All submodules required for Alexa signature
