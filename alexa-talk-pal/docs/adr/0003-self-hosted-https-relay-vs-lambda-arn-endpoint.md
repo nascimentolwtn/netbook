@@ -77,10 +77,9 @@ already flagged as the top risk to de-risk in Phase 0
   not a confirmed root cause.
 
 ### Follow-ups
-- Phase 0 (`../architecture.md` §11) must verify the `cryptography` package
-  installs cleanly (or resolve the apt/Go fallback) **before** any other
-  work — this is now the plan's single biggest remaining risk with no
-  fallback-via-Lambda left to fall back to.
+- ~~Phase 0 must verify the `cryptography` package installs cleanly~~ —
+  **resolved 2026-09-21**: it's already present via apt, no build needed.
+  See [ADR 0007](0007-cryptography-via-apt-not-pip-build.md).
 
 ## Alternatives considered
 

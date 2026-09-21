@@ -12,6 +12,7 @@ decisions were extracted from.
 | [0004](0004-ngrok-free-tier-for-public-ingress.md) | ngrok free tier (persistent domain) for public ingress | accepted |
 | [0005](0005-single-catch-all-intent-with-searchquery-slot.md) | Single catch-all intent with an AMAZON.SearchQuery slot | accepted |
 | [0006](0006-unpublished-development-mode-skill.md) | Skill stays unpublished / development mode | accepted |
+| [0007](0007-cryptography-via-apt-not-pip-build.md) | `cryptography` via apt, not a pip build | accepted |
 
 ## Template
 
