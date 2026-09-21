@@ -13,6 +13,7 @@ decisions were extracted from.
 | [0005](0005-single-catch-all-intent-with-searchquery-slot.md) | Single catch-all intent with an AMAZON.SearchQuery slot | accepted |
 | [0006](0006-unpublished-development-mode-skill.md) | Skill stays unpublished / development mode | accepted |
 | [0007](0007-cryptography-via-apt-not-pip-build.md) | `cryptography` via apt, not a pip build | accepted |
+| [0008](0008-dotenv-in-home-over-etc-environmentfile.md) | Secrets in `.env` (inside `/home`), not `/etc/talkpal/` | accepted |
 
 ## Template
 
