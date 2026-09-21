@@ -35,7 +35,7 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
    Do instead: check the OpenRouter dashboard for actual queries/day vs. the cap; if tight, the cheapest escape hatch is a one-time $10 credit purchase (permanently unlocks 1,000/day).
 
 8. **[2026-09-21] Phase 4 option: add config/CLI flag to switch relay backend from OpenRouter to local llama.cpp on Windows PC**
-   Do instead: wire the relay to support both backends via env var or CLI arg (e.g. `INFERENCE_BACKEND=openrouter` vs. `INFERENCE_BACKEND=local_llama:http://<host-pc-ip>:8000`). Run `llama.cpp` on the PC host WSL and measure latency over LAN to see if it meets the 8s Alexa deadline without the free-tier limits (50/day cap, training opt-in). Keeps OpenRouter as the default and tested path, but lets v2+ use a private inference backend if desired (architecture.md §1.2, ADR candidate).
+   Do instead: wire the relay to support both backends via env var or CLI arg (e.g. `INFERENCE_BACKEND=openrouter` vs. `INFERENCE_BACKEND=local_llama:http://192.168.4.55:11434`). Run `llama.cpp` on the PC host WSL and measure latency over LAN to see if it meets the 8s Alexa deadline without the free-tier limits (50/day cap, training opt-in). Keeps OpenRouter as the default and tested path, but lets v2+ use a private inference backend if desired (architecture.md §1.2, ADR candidate).
 
 *(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem, local-LLM-on-PC option — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
 
