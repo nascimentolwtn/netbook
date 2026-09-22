@@ -6,7 +6,9 @@ measures). Secrets load from `.env` via python-dotenv per ADR 0008 (NOT
 the /etc/talkpal/talkpal.env path architecture.md's earlier draft
 describes). `cryptography` comes from the apt-installed system package,
 not pip, per ADR 0007 — the venv must be created with
-`--system-site-packages --without-pip`.
+`--system-site-packages --without-pip`. Signature verification builds a
+path to a locally trusted Amazon root via certifi's CA bundle (ADR 0013),
+closing the gap ADR 0007's cryptography version left open.
 
 DEBUG_SKIP_SIGNATURE (env var, default OFF) bypasses Alexa signature
 verification for local/dev testing only. It must stay unset/false in any
@@ -19,6 +21,7 @@ import os
 from datetime import datetime
 from urllib.parse import urlparse
 
+import certifi
 import requests
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
@@ -218,13 +221,9 @@ def _verify_chain_dates_and_san(certs):
 
 def _verify_chain_signatures(certs):
     # Verifies each cert in the chain was signed by the next cert's key
-    # (leaf -> intermediate -> ...). Note: this checks internal chain
-    # consistency but does not build/validate a path to a locally trusted
-    # Amazon root store -- the `cryptography` version available via apt
-    # (2.1.4, ADR 0007) predates its path-building APIs. Combined with the
-    # SignatureCertChainUrl host/port/path pinning to Amazon's S3 bucket,
-    # per-cert validity-date checks, and the SAN check, this covers the
-    # practical intent of §4.2 within this library's constraints.
+    # (leaf -> intermediate -> ...). This checks internal chain consistency;
+    # _verify_chain_root_of_trust (below) covers the remaining hop to a
+    # locally trusted root.
     for child, issuer in zip(certs, certs[1:]):
         try:
             issuer.public_key().verify(
@@ -235,6 +234,64 @@ def _verify_chain_signatures(certs):
             )
         except InvalidSignature:
             raise SignatureVerificationError("Certificate chain signature verification failed")
+
+
+# Lazily-parsed, process-lifetime cache of certifi's CA bundle, indexed by
+# subject name. Built once (~150 certs) rather than per-request -- an Atom
+# N270 doing ~150 RSA/EC verifications per Alexa request would blow the 8s
+# deadline (§5.3), so this index lets each request check only the handful of
+# candidates that share the topmost fetched cert's issuer name.
+_trusted_roots_by_subject = None
+
+
+def _get_trusted_roots_by_subject():
+    global _trusted_roots_by_subject
+    if _trusted_roots_by_subject is None:
+        with open(certifi.where(), "rb") as f:
+            bundle_bytes = f.read()
+        roots = {}
+        for cert in _load_pem_certificates(bundle_bytes):
+            roots.setdefault(cert.subject, []).append(cert)
+        _trusted_roots_by_subject = roots
+    return _trusted_roots_by_subject
+
+
+def _verify_chain_root_of_trust(certs):
+    """Builds the one remaining hop `_verify_chain_signatures` deliberately
+    doesn't cover: does the topmost fetched cert chain to a root we
+    actually trust? apt's `cryptography` 2.1.4 (ADR 0007) predates the
+    library's own path-building APIs (added ~2.5+), so this does it by
+    hand with primitives already used above -- find certifi roots sharing
+    the topmost cert's issuer name, then cryptographically verify the
+    signature against each candidate's key. That signature check is what
+    makes this safe against a same-named forgery: only the real root's
+    private key produces a signature its stored public key will verify,
+    whether the topmost fetched cert is an intermediate (the common case --
+    Amazon's chain response omits the self-signed root) or the root itself.
+
+    `certifi` isn't a new dependency: it already ships with `requests`
+    (pinned in requirements.txt), and architecture.md §9.5 already calls
+    for keeping it current for outbound TLS to OpenRouter.
+    """
+    top = certs[-1]
+    now = datetime.utcnow()
+    for candidate in _get_trusted_roots_by_subject().get(top.issuer, []):
+        if not (candidate.not_valid_before <= now <= candidate.not_valid_after):
+            continue
+        try:
+            candidate.public_key().verify(
+                top.signature,
+                top.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                top.signature_hash_algorithm,
+            )
+            return
+        except InvalidSignature:
+            continue
+    raise SignatureVerificationError(
+        "Could not build a trust path from the fetched cert chain to a "
+        "locally trusted root (certifi)"
+    )
 
 
 def _verify_body_signature(leaf_cert, signature_b64, raw_body):
@@ -275,6 +332,7 @@ def verify_alexa_signature(raw_body, headers, parsed_body):
     certs = _get_cert_chain(cert_chain_url)
     _verify_chain_dates_and_san(certs)
     _verify_chain_signatures(certs)
+    _verify_chain_root_of_trust(certs)
     _verify_body_signature(certs[0], signature_b64, raw_body)
     _verify_request_timestamp(parsed_body)
 

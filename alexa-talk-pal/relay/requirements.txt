@@ -14,3 +14,8 @@ python-dotenv==0.19.2
 
 # requests 2.28+ requires Python 3.7+; stay on the last 3.6-compatible release.
 requests==2.27.1
+
+# Already an effective dependency of requests; pinned explicitly because
+# app.py now also uses this bundle as the trust store for Alexa signature
+# root-of-trust validation (ADR 0013), not just outbound TLS.
+certifi==2021.10.8

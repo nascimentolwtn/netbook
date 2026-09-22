@@ -18,6 +18,7 @@ decisions were extracted from.
 | [0010](0010-opt-in-to-free-endpoint-training.md) | Opt in to OpenRouter free-endpoint logging/training | accepted |
 | [0011](0011-lfm2.5-default-model-openrouter-free-fallback.md) | `liquid/lfm-2.5-2.6b:free` default model, `openrouter/free` fallback | accepted |
 | [0012](0012-openrouter-stays-primary-local-llama-cpp-not-yet-viable.md) | OpenRouter stays primary; local llama.cpp not yet viable (reasoning-mode truncation) | accepted |
+| [0013](0013-certifi-backed-root-of-trust-for-signature-verification.md) | certifi-backed root-of-trust hop for signature verification | accepted |
 
 ## Template
 

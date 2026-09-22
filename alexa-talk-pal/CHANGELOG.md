@@ -4,6 +4,26 @@ Completed planning/decision milestones. Build-phase work (see
 `docs/architecture.md` §11) moves here from the napkin backlog as each item
 finishes.
 
+## 2026-09-22
+
+- **Closed backlog item 2 (root-of-trust gap in signature verification)**:
+  added `_verify_chain_root_of_trust` to `app.py`, called right after the
+  existing chain-internal signature check. It indexes certifi's CA bundle
+  by subject name (parsed once, cached for the process lifetime — an Atom
+  N270 can't afford ~150 RSA verifications per request) and
+  cryptographically verifies the topmost fetched cert against any matching
+  root, closing the "doesn't build a path to a locally trusted Amazon root"
+  gap noted on 2026-09-21 without upgrading past apt's `cryptography`
+  2.1.4 (confirmed its `x509.Name` already supports the `__eq__`/`__hash__`
+  this needs). `certifi` was already an effective dependency via `requests`;
+  pinned it explicitly (`certifi==2021.10.8`) now that it also backs a
+  security check. See
+  [ADR 0013](docs/adr/0013-certifi-backed-root-of-trust-for-signature-verification.md).
+  **Not yet field-verified**: written and reasoned through in a remote
+  session with no LAN/SSH access to the netbook or a live Alexa request to
+  test against — run a real `SignatureCertChainUrl` chain through
+  `verify_alexa_signature` on the netbook before Phase 2's live cutover.
+
 ## 2026-09-21
 
 - **Re-tested local llama.cpp after a server restart "without the thinking
