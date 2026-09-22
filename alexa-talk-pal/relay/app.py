@@ -53,9 +53,23 @@ DEBUG_SKIP_SIGNATURE = os.environ.get("DEBUG_SKIP_SIGNATURE", "").strip().lower(
     "on",
 )
 
+# Backend switch (napkin backlog item 3 / ADR 0013). "openrouter" (default)
+# is the only backend with a fallback model and 429 handling; "local" is a
+# hard switch to the Windows PC llama.cpp server, no fallback between the
+# two. Local needs a bigger max_tokens than OpenRouter -- its hybrid
+# reasoning shares the same token budget as the spoken answer, and 150 was
+# too tight (ADR 0012's follow-up testing).
+INFERENCE_BACKEND = os.environ.get("INFERENCE_BACKEND", "openrouter").strip().lower()
+LOCAL_LLM_BASE_URL = os.environ.get(
+    "LOCAL_LLM_BASE_URL", "http://192.168.4.55:11434/v1/chat/completions"
+)
+LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL", "LFM2.5-2.6B-Q4_K_M.gguf")
+LOCAL_LLM_MAX_TOKENS = int(os.environ.get("LOCAL_LLM_MAX_TOKENS", "500") or "500")
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_CONNECT_TIMEOUT = 2
 OPENROUTER_READ_TIMEOUT = 5
+OPENROUTER_MAX_TOKENS = 150
 
 VOICE_SYSTEM_PROMPT = (
     "You are a helpful voice assistant answering a spoken question. "
@@ -280,24 +294,25 @@ def verify_alexa_signature(raw_body, headers, parsed_body):
 
 
 # ---------------------------------------------------------------------------
-# OpenRouter
+# LLM backends -- OpenRouter (default) or local llama.cpp (opt-in)
 # ---------------------------------------------------------------------------
 class OpenRouterRateLimited(Exception):
     pass
 
 
-def _call_chat_completions(base_url, model, query, api_key=None):
+def _call_chat_completions(base_url, model, query, api_key=None, max_tokens=OPENROUTER_MAX_TOKENS):
     """POSTs an OpenAI-compatible /chat/completions request. Generic over
     the target -- OpenRouter needs a bearer token, a local llama.cpp
-    server (measure_latency.py --base-url) doesn't. Same request shape,
-    same timeouts either way, so a latency comparison stays apples-to-apples
-    against the 8s Alexa deadline (architecture.md §5.3)."""
+    server (measure_latency.py --base-url) doesn't. max_tokens is
+    overridable per-backend: OpenRouter's default (150) is too tight for
+    the local server's hybrid reasoning, which shares the same budget as
+    the spoken answer and was getting truncated (ADR 0012)."""
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer {}".format(api_key)
     payload = {
         "model": model,
-        "max_tokens": 150,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": VOICE_SYSTEM_PROMPT},
             {"role": "user", "content": query},
@@ -315,6 +330,12 @@ def _call_openrouter(model, query):
     return _call_chat_completions(OPENROUTER_URL, model, query, api_key=OPENROUTER_API_KEY)
 
 
+def _call_local_llm(query):
+    return _call_chat_completions(
+        LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL, query, max_tokens=LOCAL_LLM_MAX_TOKENS
+    )
+
+
 def ask_openrouter(query):
     """Returns spoken text. Raises OpenRouterRateLimited if both the
     primary and (if configured) fallback model return 429; raises other
@@ -329,6 +350,27 @@ def ask_openrouter(query):
     resp.raise_for_status()
     data = resp.json()
     return data["choices"][0]["message"]["content"].strip()
+
+
+def ask_local_llm(query):
+    """Returns spoken text from the local llama.cpp server. No fallback
+    model, no 429 handling (single private server, no rate limit) --
+    just a hard timeout/error like any other backend failure, caught by
+    the same generic exception handling as ask_openrouter (§5.3)."""
+    resp = _call_local_llm(query)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
+def ask_llm(query):
+    """Dispatches to the configured backend. Default is OpenRouter;
+    INFERENCE_BACKEND=local hard-switches to the Windows PC llama.cpp
+    server -- no automatic fallback between the two backends themselves
+    (ADR 0013)."""
+    if INFERENCE_BACKEND == "local":
+        return ask_local_llm(query)
+    return ask_openrouter(query)
 
 
 # ---------------------------------------------------------------------------
@@ -350,13 +392,13 @@ def _handle_ask_anything(intent):
         return alexa_response(QUOTA_EXHAUSTED_FALLBACK, end_session=True)
 
     try:
-        speech = ask_openrouter(query)
+        speech = ask_llm(query)
     except OpenRouterRateLimited:
         return alexa_response(RATE_LIMIT_FALLBACK, end_session=False)
     except requests.exceptions.Timeout:
         return alexa_response(TIMEOUT_FALLBACK, end_session=False)
     except Exception as exc:  # noqa: broad -- never let anything escape as a 500
-        app.logger.exception("OpenRouter call failed: %s", exc)
+        app.logger.exception("LLM call failed (backend=%s): %s", INFERENCE_BACKEND, exc)
         return alexa_response(GENERIC_ERROR_FALLBACK, end_session=False)
 
     if not speech:
