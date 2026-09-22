@@ -6,6 +6,25 @@ finishes.
 
 ## 2026-09-21
 
+- **Picked the default OpenRouter model (backlog item 1, Phase 1 latency
+  measurement)**: `liquid/lfm-2.5-2.6b:free` as `OPENROUTER_MODEL`,
+  `openrouter/free` (the free-models router) as
+  `OPENROUTER_FALLBACK_MODEL`. Tested via `relay/measure_latency.py`
+  (reuses `app.py`'s real request shape) against four live candidates:
+  `nvidia/nemotron-3.5-lightning:free` was disqualified by dashboard data
+  alone (40–80s time-to-first-token); `google/gemma-4-26b-a4b-it:free` and
+  `qwen/qwen3.8-27b:free` both 429'd on 100% of calls across repeated
+  spaced-out runs (provider capacity, not our pacing); `liquid/lfm-2.5-2.6b:free`
+  succeeded on 17/19 calls across two runs, p90 1.55–3.20s, comfortably
+  under the 8s Alexa deadline. See
+  [ADR 0011](docs/adr/0011-lfm2.5-default-model-openrouter-free-fallback.md).
+  **Also discovered while checking quota**: the account already has the
+  $10 lifetime credit applied, so the real daily cap is 1,000/day, not
+  50/day — this also resolves the old "revisit 50/day after a week"
+  backlog concern; removed from the backlog as no longer a live risk.
+  **Still needs a manual step**: set `OPENROUTER_MODEL` and
+  `OPENROUTER_FALLBACK_MODEL` in the real `.env` — not done by the
+  assistant, per the standing `.env` access rule (ADR 0008).
 - **Decided the OpenRouter free-endpoint training opt-in (backlog item 1)**:
   opted in — full `:free` model catalog stays available for Phase 1's
   latency-based model selection, mitigated by household behavior (no

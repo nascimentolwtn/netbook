@@ -16,6 +16,7 @@ decisions were extracted from.
 | [0008](0008-dotenv-in-home-over-etc-environmentfile.md) | Secrets in `.env` (inside `/home`), not `/etc/talkpal/` | accepted |
 | [0009](0009-reuse-prior-skill-id-and-invocation-name.md) | Reuse prior skill ID, invocation name, and locale | accepted |
 | [0010](0010-opt-in-to-free-endpoint-training.md) | Opt in to OpenRouter free-endpoint logging/training | accepted |
+| [0011](0011-lfm2.5-default-model-openrouter-free-fallback.md) | `liquid/lfm-2.5-2.6b:free` default model, `openrouter/free` fallback | accepted |
 
 ## Template
 
