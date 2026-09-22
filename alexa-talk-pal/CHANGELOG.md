@@ -6,6 +6,27 @@ finishes.
 
 ## 2026-09-21
 
+- **Wrote the three fallback spoken lines**: timeout, daily-quota-exhausted,
+  and a generic-error catch-all (a literal "tunnel down" line isn't
+  speakable by the relay — if the tunnel's down, Alexa can never reach it).
+  `alexa-talk-pal/relay/fallback_messages.py`.
+- **Built and curl-verified `talkpal-relay`**: Flask app with `/health` and
+  `/alexa` (LaunchRequest, SessionEndedRequest, Stop/Cancel/Help,
+  `AskAnythingIntent`), OpenRouter call with a (2s connect, 5s read)
+  timeout, one-shot 429 fallback to `OPENROUTER_FALLBACK_MODEL`, a daily
+  quota guard persisted to disk, and real Alexa signature verification
+  (not just a debug stub) gated by `DEBUG_SKIP_SIGNATURE`.
+  `alexa-talk-pal/relay/app.py`, `requirements.txt`. Verified live on the
+  netbook: venv built per ADR 0007, `/health` and `LaunchRequest` returned
+  200, `AskAnythingIntent` hit real OpenRouter with a dummy key (got a
+  genuine 401) and returned the graceful fallback line rather than a crash
+  or 500, and signature rejection was confirmed with the debug bypass off.
+  **Known gap**: signature verification doesn't build a path to a locally
+  trusted Amazon root CA — apt's `cryptography` 2.1.4 predates that API.
+  Mitigated by pinning `SignatureCertChainUrl` to `s3.amazonaws.com`, SAN
+  and validity-date checks, and chain-internal signature verification;
+  tracked as an open backlog item to explicitly accept or harden before
+  the real Alexa endpoint goes live.
 - **Decided locale + invocation name (backlog item 2)**: reusing the prior
   prototype's Alexa skill — Skill ID, invocation name `"english talk pal"`,
   en-US locale. See

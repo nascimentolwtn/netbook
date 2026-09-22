@@ -16,25 +16,22 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 1. **[2026-09-21] Decide the OpenRouter free-endpoint training opt-in before creating the account/key**
    Do instead: explicitly choose whether to allow providers to log/train on `:free` prompts (architecture.md §9.6); set the key's spend limit to $0 regardless of the choice.
 
-2. **[2026-09-21] Write the three fallback spoken lines up front (timeout / daily quota exhausted / tunnel down)**
-   Do instead: draft the exact copy before the Phase 1 relay is built, so error paths return real text, not placeholders (architecture.md §10.9).
-
-3. **[2026-09-21] Phase 1: build `talkpal-relay` (Flask, venv `--system-site-packages --without-pip`) + OpenRouter call + quota guard, verify via curl**
-   Do instead: build with a debug signature-bypass flag first; wire real signature verification next — crypto packaging is resolved (ADR 0007), nothing blocks this anymore.
-
-4. **[2026-09-21] Phase 1: measure real latency across 2–3 candidate `:free` OpenRouter models before picking the default**
+2. **[2026-09-21] Phase 1: measure real latency across 2–3 candidate `:free` OpenRouter models before picking the default**
    Do instead: run ~10 timed queries per candidate (mind the 50/day free cap while testing), pick based on tail latency against the 8s Alexa deadline — not the table in architecture.md §8.2.
 
-5. **[2026-09-21] Phase 1: install systemd units for relay + tunnel (place ngrok permanently, e.g. `/usr/local/bin`), reboot-test for a stable hostname**
+3. **[2026-09-21] Phase 1: install systemd units for relay + tunnel (place ngrok permanently, e.g. `/usr/local/bin`), reboot-test for a stable hostname**
    Do instead: confirm the tunnel survives a reboot with the *same* hostname before touching the Alexa console at all — a rotating hostname was the prior prototype's documented failure mode.
 
-6. **[2026-09-21] Phase 2: switch the reused skill's endpoint from Lambda ARN to HTTPS, edit interaction model off `TalkIntent` toward ADR 0005's shape**
+4. **[2026-09-21] Before Phase 2 live cutover: review/harden signature verification's missing root-CA path-building**
+   Do instead: `relay/app.py`'s `_verify_chain_signatures` checks internal chain-signature consistency, per-cert dates, SAN, and pins `SignatureCertChainUrl` to `s3.amazonaws.com`, but doesn't build a path to a locally trusted Amazon root (apt's `cryptography` 2.1.4 predates that API — see guardrail below). Decide explicitly whether the current mitigations are sufficient before wiring the real Alexa endpoint, or upgrade the crypto story.
+
+5. **[2026-09-21] Phase 2: switch the reused skill's endpoint from Lambda ARN to HTTPS, edit interaction model off `TalkIntent` toward ADR 0005's shape**
    Do instead: expect several "Save Model" failures (ADR 0005); keep the two-turn fallback (LaunchRequest asks the question, then captures the follow-up) ready if the single-shot slot won't validate. Endpoint switch is per ADR 0003/0009 — same Skill ID, new endpoint config.
 
-7. **[2026-09-21] Phase 3: after a week of real Echo usage, revisit whether 50 requests/day is enough**
+6. **[2026-09-21] Phase 3: after a week of real Echo usage, revisit whether 50 requests/day is enough**
    Do instead: check the OpenRouter dashboard for actual queries/day vs. the cap; if tight, the cheapest escape hatch is a one-time $10 credit purchase (permanently unlocks 1,000/day).
 
-8. **[2026-09-21] Phase 4 option: add config/CLI flag to switch relay backend from OpenRouter to local llama.cpp on Windows PC**
+7. **[2026-09-21] Phase 4 option: add config/CLI flag to switch relay backend from OpenRouter to local llama.cpp on Windows PC**
    Do instead: wire the relay to support both backends via env var or CLI arg (e.g. `INFERENCE_BACKEND=openrouter` vs. `INFERENCE_BACKEND=local_llama:http://192.168.4.55:11434`). Run `llama.cpp` on the PC host WSL and measure latency over LAN to see if it meets the 8s Alexa deadline without the free-tier limits (50/day cap, training opt-in). Keeps OpenRouter as the default and tested path, but lets v2+ use a private inference backend if desired (architecture.md §1.2, ADR candidate).
 
 *(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem, local-LLM-on-PC option — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
@@ -57,6 +54,9 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 
 6. **[2026-09-21] Local llama.cpp model on Windows PC (192.168.4.55:11434) — LFM2.5-8B-A1B is very fast but hallucinates**
    Do instead: during Phase 4 evaluation (backlog §8), benchmark alternative models that trade some speed for accuracy. The current model works for latency testing but may not be suitable for production v2. Model selection (speed vs. accuracy vs. context length) is part of the Phase 4 latency measurement.
+
+7. **[2026-09-21] apt's `cryptography` 2.1.4 (ADR 0007) predates path-building APIs — signature verification can't build a trust path to a local Amazon root store**
+   Do instead: `relay/app.py`'s verification pins `SignatureCertChainUrl` to `s3.amazonaws.com`/`/echo.api/`, checks per-cert validity dates, the leaf SAN (`echo-api.amazon.com`), and chain-internal signatures — but not root-of-trust path validation. Don't rediscover this while debugging signature rejects; see backlog item 4 for the explicit go/no-go decision.
 
 ## User Directives
 1. **[2026-09-21] New components for this ecosystem live nested inside this repo, not as sibling repos**
