@@ -6,6 +6,19 @@ finishes.
 
 ## 2026-09-22
 
+- **Closed backlog item 3: local llama.cpp is now a switchable backend
+  option (`INFERENCE_BACKEND=local`), OpenRouter stays the default**.
+  The fix for the truncation bug ADR 0012 found: raise `max_tokens` for
+  local calls only (`LOCAL_LLM_MAX_TOKENS=500` vs. OpenRouter's 150) --
+  reasoning shares the same token budget as the spoken answer and was
+  getting starved at 150. Tested 15/15 clean at 500 (5x the repro
+  question, then the full 10-query set), latency barely moved since the
+  model naturally stops around 100-240 tokens on its own. `app.py`'s
+  `_call_chat_completions` now takes `max_tokens` as a parameter instead
+  of a hardcoded value; new `ask_local_llm`/`ask_llm` dispatch, default
+  path (`ask_openrouter`) is byte-for-byte unchanged. Deployed and
+  smoke-tested live via the public tunnel. See
+  [ADR 0013](docs/adr/0013-configurable-local-backend-openrouter-stays-default.md).
 - **Retested local llama.cpp with reasoning reverted back on**: same
   Moon-distance repro query as the earlier reasoning-off attempt.
   `reasoning_content` is correctly separated from `content` again in this

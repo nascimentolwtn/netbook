@@ -19,9 +19,6 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 2. **[2026-09-21] Phase 2: switch the reused skill's endpoint from Lambda ARN to HTTPS, edit interaction model off `TalkIntent` toward ADR 0005's shape**
    Do instead: expect several "Save Model" failures (ADR 0005); keep the two-turn fallback (LaunchRequest asks the question, then captures the follow-up) ready if the single-shot slot won't validate. Endpoint switch is per ADR 0003/0009 — same Skill ID, new endpoint config. The stable HTTPS endpoint to enter is `https://viscous-landlady-reappoint.ngrok-free.dev/alexa` (backlog item 1 closed — see CHANGELOG 2026-09-22).
 
-3. **[2026-09-22] Phase 4 option: local llama.cpp backend is faster than OpenRouter but reasoning eats the shared token budget in BOTH server configs tried so far**
-   Do instead: measured (ADR 0012) — local (192.168.4.55:11434, `LFM2.5-2.6B-Q4_K_M.gguf`) beats OpenRouter 3-5x on latency (p90 ~1.3s vs 6.08s) with no rate-limit exposure, but two configs tested so far both fail the same repro question ("Roughly how far is the Moon from Earth?", `max_tokens=150`): **reasoning on** (server's normal state) -- `reasoning_content` correctly separated from `content`, but reasoning alone can consume the whole budget, leaving `content` truncated or (confirmed 2026-09-22) completely empty, `finish_reason: "length"` either way. **Reasoning-disable attempted via restart** -- didn't actually stop reasoning, just stopped splitting it out, so the raw `<think>...</think>` block lands directly in `content` instead (worse: gets read aloud verbatim). Needs an actual `--reasoning-format none`-style launch flag (not yet tried) before re-testing via `measure_latency.py --base-url ...`. `app.py`'s `_call_chat_completions` already supports this with zero new code once the server's fixed.
-
 *(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem, local-LLM-on-PC option — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
 
 ## Domain Behavior Guardrails
@@ -40,8 +37,8 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 5. **[2026-09-21] `architecture.md` §9.1's `/etc/talkpal/talkpal.env` secret location is superseded — don't re-apply it**
    Do instead: secrets live in `alexa-talk-pal/.env` (gitignored, `python-dotenv`), per ADR 0008. User knowingly accepted that this gets replicated by Syncthing to the Windows PC `/home` backup.
 
-6. **[2026-09-21] Local llama.cpp server on Windows PC (192.168.4.55:11434) now has `LFM2.5-2.6B-Q4_K_M.gguf` loaded (swapped from the earlier LFM2.5-8B-A1B) — OpenAI-compatible at `/v1/chat/completions`, no auth required**
-   Do instead: don't assume 8B-A1B is still loaded — check `GET /api/tags` or `/v1/models` before testing. It has hybrid reasoning on by default with no clean per-request disable (see backlog item 3 / ADR 0012) — that's the live blocker, not hallucination, for this model.
+6. **[2026-09-22] Local llama.cpp server (192.168.4.55:11434, `LFM2.5-2.6B-Q4_K_M.gguf`) is wired in as `INFERENCE_BACKEND=local` — needs `LOCAL_LLM_MAX_TOKENS=500`, not OpenRouter's 150**
+   Do instead: its hybrid reasoning shares the same token budget as the spoken answer and truncates (or returns empty) at 150 — fixed by raising `max_tokens` for local calls only, no server changes needed (ADR 0012/0013). Don't assume 8B-A1B is still loaded — check `GET /api/tags` or `/v1/models` before testing if the model might have changed again.
 
 7. **[2026-09-21] apt's `cryptography` 2.1.4 (ADR 0007) predates path-building APIs — signature verification can't build a trust path to a local Amazon root store**
    Do instead: `relay/app.py`'s verification pins `SignatureCertChainUrl` to `s3.amazonaws.com`/`/echo.api/`, checks per-cert validity dates, the leaf SAN (`echo-api.amazon.com`), and chain-internal signatures — but not root-of-trust path validation. Don't rediscover this while debugging signature rejects; see backlog item 1 for the explicit go/no-go decision.
