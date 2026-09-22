@@ -1,0 +1,16 @@
+# Pinned for Python 3.6 (Xubuntu 18.04 system python3) on i686.
+# `cryptography` is deliberately NOT listed here — it comes from the apt
+# package `python3-cryptography` via `venv --system-site-packages`
+# (see docs/adr/0007-cryptography-via-apt-not-pip-build.md).
+
+# Flask 2.1+ requires Python 3.7+; stay on the 2.0.x line.
+Flask==2.0.3
+
+# Pure-Python WSGI server, no compilation needed on 3.6/i686.
+waitress==1.4.4
+
+# python-dotenv 0.20+ drops older Python 3 support; stay conservative.
+python-dotenv==0.19.2
+
+# requests 2.28+ requires Python 3.7+; stay on the last 3.6-compatible release.
+requests==2.27.1
