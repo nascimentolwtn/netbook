@@ -6,6 +6,14 @@ finishes.
 
 ## 2026-09-21
 
+- **Re-tested local llama.cpp after a server restart "without the thinking
+  flag"**: did not fix the truncation bug from ADR 0012. Reasoning no
+  longer comes back as a separate `reasoning_content` field, but the raw
+  `<think>...</think>` block is now inlined directly into `content`
+  instead -- still eats the shared token budget (`finish_reason: "length"`
+  on the same repro query), and would now get read aloud verbatim on top
+  of that. Decision unchanged (OpenRouter stays primary); documented in
+  ADR 0012's Follow-ups.
 - **Generalized the relay's LLM call and compared OpenRouter vs. local
   llama.cpp (backlog item 4, Phase 4 option)**: `app.py`'s
   `_call_openrouter` was hardcoded to OpenRouter's URL/auth; split out a
