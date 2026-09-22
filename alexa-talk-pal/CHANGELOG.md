@@ -4,6 +4,26 @@ Completed planning/decision milestones. Build-phase work (see
 `docs/architecture.md` §11) moves here from the napkin backlog as each item
 finishes.
 
+## 2026-09-22
+
+- **Closed backlog item 1 (Phase 1): systemd units for relay + tunnel,
+  reboot-tested for a stable hostname**. `ngrok` re-downloaded (`linux/386`
+  v3.39.11, same build as before — the earlier `/tmp/ngrok` copy had been
+  cleared, likely by a reboot) to `/usr/local/bin/ngrok`. Two systemd units
+  added on the netbook: `talkpal-relay.service` (waitress via the venv,
+  `WorkingDirectory=~/talkpal-relay`) and `talkpal-tunnel.service`
+  (`ngrok http 5040 --url=https://viscous-landlady-reappoint.ngrok-free.dev`,
+  `Requires=talkpal-relay.service`). Both `enabled` + verified `active`
+  before and after a real `sudo reboot` (back up in ~40s); `curl
+  https://viscous-landlady-reappoint.ngrok-free.dev/health` returned a
+  clean `200 {"status":"ok"}` both times, same hostname, no interstitial
+  warning page on the GET. Fixes the exact rotating-hostname failure mode
+  the prior prototype documented. Domain itself was already claimed
+  (~5 months old, likely an undocumented step from that same prior
+  prototype attempt) — ngrok's free tier only allows one claimed domain
+  per account, confirmed while trying to reserve a second one. See
+  [ADR 0004's 2026-09-22 update](docs/adr/0004-ngrok-free-tier-for-public-ingress.md).
+
 ## 2026-09-21
 
 - **Re-tested local llama.cpp after a server restart "without the thinking

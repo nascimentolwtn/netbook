@@ -47,6 +47,29 @@ and documented.
 - Verify `linux/386` build and interstitial behavior in Phase 0/2 before
   relying on this.
 
+### Update (2026-09-22, Phase 1 systemd setup)
+- **The domain already existed**: `viscous-landlady-reappoint.ngrok-free.dev`,
+  claimed ~5 months prior, most likely during an earlier undocumented step
+  of the abandoned `/mnt/e/dev/alexa-talk-pal` prototype attempt (no trace
+  of it in that repo, `calcvi2`, or `english_tutor`, but its ngrok-assigned
+  random-word naming rules out `calcvi2`'s ad-hoc dev-tunnel workflow, which
+  has no persisted domain reference anywhere in that repo). Reused it for
+  this project rather than creating a new one.
+- **Free tier is one claimed domain total, not several**: the dashboard's
+  "New Domain" form let us type any name, but every option (`.ngrok-free.app`,
+  `.ngrok-free.dev`, `.ngrok.io`) showed "Requires Upgrade" once an account
+  already has its one free domain. Don't re-attempt claiming a second free
+  domain for a different service later — it needs a paid plan or Cloudflare
+  Tunnel (kept as Option B below) instead.
+- **Current CLI flag is `--url=`, not `--domain`**: `ngrok http 5040 --url=https://viscous-landlady-reappoint.ngrok-free.dev`
+  (confirmed against ngrok's own current agent-setup guidance,
+  `https://ngrok.com/agent-setup/prompt.md`). `--domain` was this ADR's
+  original assumption from general knowledge, not a verified flag.
+- Interstitial warning page: a plain `curl` GET to `/health` through the
+  tunnel returned a clean 200 with no interstitial, so non-browser
+  server-to-server traffic (which is what Alexa sends) isn't blocked by it.
+  Closes the Phase 2 check this ADR originally flagged as unverified.
+
 ## Alternatives considered
 
 - **Unclaimed/rotating free ngrok tunnel** — rejected; this is exactly the
