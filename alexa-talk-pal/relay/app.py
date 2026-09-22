@@ -286,11 +286,15 @@ class OpenRouterRateLimited(Exception):
     pass
 
 
-def _call_openrouter(model, query):
-    headers = {
-        "Authorization": "Bearer {}".format(OPENROUTER_API_KEY),
-        "Content-Type": "application/json",
-    }
+def _call_chat_completions(base_url, model, query, api_key=None):
+    """POSTs an OpenAI-compatible /chat/completions request. Generic over
+    the target -- OpenRouter needs a bearer token, a local llama.cpp
+    server (measure_latency.py --base-url) doesn't. Same request shape,
+    same timeouts either way, so a latency comparison stays apples-to-apples
+    against the 8s Alexa deadline (architecture.md §5.3)."""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = "Bearer {}".format(api_key)
     payload = {
         "model": model,
         "max_tokens": 150,
@@ -300,11 +304,15 @@ def _call_openrouter(model, query):
         ],
     }
     return requests.post(
-        OPENROUTER_URL,
+        base_url,
         headers=headers,
         json=payload,
         timeout=(OPENROUTER_CONNECT_TIMEOUT, OPENROUTER_READ_TIMEOUT),
     )
+
+
+def _call_openrouter(model, query):
+    return _call_chat_completions(OPENROUTER_URL, model, query, api_key=OPENROUTER_API_KEY)
 
 
 def ask_openrouter(query):
