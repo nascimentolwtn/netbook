@@ -6,6 +6,15 @@ finishes.
 
 ## 2026-09-21
 
+- **Decided the OpenRouter free-endpoint training opt-in (backlog item 1)**:
+  opted in — full `:free` model catalog stays available for Phase 1's
+  latency-based model selection, mitigated by household behavior (no
+  private questions on this Echo) rather than a restricted model list.
+  $0-spend-limit key already created. See
+  [ADR 0010](docs/adr/0010-opt-in-to-free-endpoint-training.md). **Still
+  needs a manual step**: flip the "enable free endpoints that may train on
+  inputs" toggle in the OpenRouter account/privacy dashboard if not
+  already on — this isn't controllable via the API key or `.env`.
 - **Wrote the three fallback spoken lines**: timeout, daily-quota-exhausted,
   and a generic-error catch-all (a literal "tunnel down" line isn't
   speakable by the relay — if the tunnel's down, Alexa can never reach it).
