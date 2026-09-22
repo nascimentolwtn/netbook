@@ -28,6 +28,12 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
+from fallback_messages import (
+    GENERIC_ERROR_MESSAGE as GENERIC_ERROR_FALLBACK,
+    QUOTA_EXHAUSTED_MESSAGE as QUOTA_EXHAUSTED_FALLBACK,
+    TIMEOUT_MESSAGE as TIMEOUT_FALLBACK,
+)
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -58,12 +64,9 @@ VOICE_SYSTEM_PROMPT = (
     "read aloud exactly as written."
 )
 
-# Fallback spoken lines. Defined locally on purpose: another engineer owns
-# relay/fallback_messages.py in parallel and reconciliation happens later,
-# not here.
-TIMEOUT_FALLBACK = "Sorry, I couldn't reach my brain just now. Try again?"
-QUOTA_EXHAUSTED_FALLBACK = "I've used up my questions for today."
-GENERIC_ERROR_FALLBACK = "Sorry, something went wrong on my end. Try again in a bit?"
+# Timeout / quota-exhausted / generic-error lines come from
+# fallback_messages.py (imported above). Rate limit isn't one of that
+# module's three cases, so it stays local.
 RATE_LIMIT_FALLBACK = "I'm getting a lot of questions right now. Try again in a minute?"
 HELP_TEXT = "You can ask me pretty much anything -- just ask a question and I'll do my best to answer."
 GOODBYE_TEXT = "Goodbye."
