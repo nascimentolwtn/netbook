@@ -6,6 +6,23 @@ finishes.
 
 ## 2026-09-21
 
+- **Generalized the relay's LLM call and compared OpenRouter vs. local
+  llama.cpp (backlog item 4, Phase 4 option)**: `app.py`'s
+  `_call_openrouter` was hardcoded to OpenRouter's URL/auth; split out a
+  generic `_call_chat_completions(base_url, model, query, api_key=None)`
+  and gave `measure_latency.py` a `--base-url`/`--api-key` flag so the
+  same probe can target any OpenAI-compatible backend.
+  Ran both from the netbook against the same model weights
+  (`LFM2.5-2.6B-Q4_K_M.gguf` locally on the Windows PC at
+  192.168.4.55:11434, `liquid/lfm-2.5-2.6b:free` on OpenRouter): local was
+  3-5x faster and jitter-free (p90 1.30s vs. 6.08s), but the local
+  server runs LFM2.5 with hybrid reasoning enabled by default and no
+  per-request flag cleanly disables it — on a normal question, reasoning
+  ate the shared `max_tokens=150` budget and truncated the spoken answer
+  mid-sentence. Decided to keep OpenRouter as the only wired backend until
+  the Windows PC server is relaunched with reasoning disabled
+  server-side. See
+  [ADR 0012](docs/adr/0012-openrouter-stays-primary-local-llama-cpp-not-yet-viable.md).
 - **Picked the default OpenRouter model (backlog item 1, Phase 1 latency
   measurement)**: `liquid/lfm-2.5-2.6b:free` as `OPENROUTER_MODEL`,
   `openrouter/free` (the free-models router) as

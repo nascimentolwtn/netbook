@@ -22,8 +22,8 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 3. **[2026-09-21] Phase 2: switch the reused skill's endpoint from Lambda ARN to HTTPS, edit interaction model off `TalkIntent` toward ADR 0005's shape**
    Do instead: expect several "Save Model" failures (ADR 0005); keep the two-turn fallback (LaunchRequest asks the question, then captures the follow-up) ready if the single-shot slot won't validate. Endpoint switch is per ADR 0003/0009 — same Skill ID, new endpoint config.
 
-4. **[2026-09-21] Phase 4 option: add config/CLI flag to switch relay backend from OpenRouter to local llama.cpp on Windows PC**
-   Do instead: wire the relay to support both backends via env var or CLI arg (e.g. `INFERENCE_BACKEND=openrouter` vs. `INFERENCE_BACKEND=local_llama:http://192.168.4.55:11434`). Run `llama.cpp` on the PC host WSL and measure latency over LAN to see if it meets the 8s Alexa deadline without the free-tier limits (50/day cap, training opt-in). Keeps OpenRouter as the default and tested path, but lets v2+ use a private inference backend if desired (architecture.md §1.2, ADR candidate).
+4. **[2026-09-21] Phase 4 option: local llama.cpp backend is faster than OpenRouter but blocked by a reasoning-mode truncation bug — fix server-side before reconsidering**
+   Do instead: measured (ADR 0012) — local (192.168.4.55:11434, `LFM2.5-2.6B-Q4_K_M.gguf`) beats OpenRouter 3-5x on latency (p90 1.30s vs 6.08s) with no rate-limit exposure, but the server runs hybrid reasoning by default and no per-request flag (`chat_template_kwargs.enable_thinking`, `/no_think`, `reasoning_effort`) disables it cleanly — reasoning ate the shared token budget and truncated a real answer mid-sentence. Needs the Windows PC llama.cpp server relaunched with `--reasoning-format none` (or equivalent) and re-tested via `measure_latency.py --base-url ...` before wiring it as even an opt-in fallback. `app.py`'s `_call_chat_completions` + the script's `--base-url` flag already support re-testing with zero new code.
 
 *(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem, local-LLM-on-PC option — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
 
@@ -43,8 +43,8 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 5. **[2026-09-21] `architecture.md` §9.1's `/etc/talkpal/talkpal.env` secret location is superseded — don't re-apply it**
    Do instead: secrets live in `alexa-talk-pal/.env` (gitignored, `python-dotenv`), per ADR 0008. User knowingly accepted that this gets replicated by Syncthing to the Windows PC `/home` backup.
 
-6. **[2026-09-21] Local llama.cpp model on Windows PC (192.168.4.55:11434) — LFM2.5-8B-A1B is very fast but hallucinates**
-   Do instead: during Phase 4 evaluation (backlog item 4), benchmark alternative models that trade some speed for accuracy. The current model works for latency testing but may not be suitable for production v2. Model selection (speed vs. accuracy vs. context length) is part of the Phase 4 latency measurement.
+6. **[2026-09-21] Local llama.cpp server on Windows PC (192.168.4.55:11434) now has `LFM2.5-2.6B-Q4_K_M.gguf` loaded (swapped from the earlier LFM2.5-8B-A1B) — OpenAI-compatible at `/v1/chat/completions`, no auth required**
+   Do instead: don't assume 8B-A1B is still loaded — check `GET /api/tags` or `/v1/models` before testing. It has hybrid reasoning on by default with no clean per-request disable (see backlog item 4 / ADR 0012) — that's the live blocker, not hallucination, for this model.
 
 7. **[2026-09-21] apt's `cryptography` 2.1.4 (ADR 0007) predates path-building APIs — signature verification can't build a trust path to a local Amazon root store**
    Do instead: `relay/app.py`'s verification pins `SignatureCertChainUrl` to `s3.amazonaws.com`/`/echo.api/`, checks per-cert validity dates, the leaf SAN (`echo-api.amazon.com`), and chain-internal signatures — but not root-of-trust path validation. Don't rediscover this while debugging signature rejects; see backlog item 2 for the explicit go/no-go decision.
