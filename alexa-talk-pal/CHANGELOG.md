@@ -6,6 +6,17 @@ finishes.
 
 ## 2026-09-22
 
+- **Retested local llama.cpp with reasoning reverted back on**: same
+  Moon-distance repro query as the earlier reasoning-off attempt.
+  `reasoning_content` is correctly separated from `content` again in this
+  config, but the underlying bug is confirmed present here too, and worse
+  than the original test: `content` came back completely empty (`""`),
+  `finish_reason: "length"`, all 150 tokens went to `reasoning_content`
+  (619 chars). Corrected a napkin/ADR 0012 note that had implied this
+  reverted state was already re-tested and ruled out -- it hadn't been;
+  only the reasoning-off attempt had. Decision unchanged (OpenRouter
+  primary); still needs an untried `--reasoning-format none`-style launch
+  flag before local is viable.
 - **Closed backlog item 1 (Phase 1): systemd units for relay + tunnel,
   reboot-tested for a stable hostname**. `ngrok` re-downloaded (`linux/386`
   v3.39.11, same build as before — the earlier `/tmp/ngrok` copy had been

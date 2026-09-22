@@ -84,18 +84,25 @@ one-line command, not new code.
   (`--reasoning-format none` or equivalent for this build), then re-run
   the same `measure_latency.py --base-url ...` comparison before touching
   this decision again.
-- **Tried and ruled out (2026-09-21, same day)**: restarting the server
-  without whatever launch flag was enabling the "thinking" split did not
-  fix this -- it made it worse. `reasoning_content` disappeared, but the
-  raw `<think>...</think>` block is now inlined directly into `content`
-  instead, still consuming the shared `max_tokens` budget
-  (`finish_reason: "length"` on the same test query as before). A relay
-  hitting this now would read the think-block out loud to the user, on
-  top of still truncating the actual answer. The fix needs an explicit
-  `--reasoning-format none`-style flag (or prompt/template-level
-  suppression that actually stops generation, not just re-routes where
-  the tokens land), not just removing whatever flag was previously
-  enabling the split.
+- **Tried and ruled out (2026-09-21)**: restarting the server without
+  whatever launch flag was enabling the "thinking" split did not fix
+  this -- it made it worse. `reasoning_content` disappeared, but the raw
+  `<think>...</think>` block was inlined directly into `content` instead,
+  still consuming the shared `max_tokens` budget (`finish_reason: "length"`
+  on the same test query as before). A relay hitting this would read the
+  think-block out loud to the user, on top of still truncating the actual
+  answer.
+- **Reverted back to reasoning-on, retested (2026-09-22)**: same repro
+  query, `reasoning_content` correctly separated from `content` again --
+  but the underlying bug is still there in this config too, and this run
+  was worse than the original: `content` came back completely empty
+  (`""`), not just truncated, with `finish_reason: "length"` and
+  `reasoning_content` at 619 chars. So neither config tested so far
+  (reasoning on, or the attempted reasoning-off restart) is safe. The fix
+  needs an explicit `--reasoning-format none`-style flag (or
+  prompt/template-level suppression that actually stops generation, not
+  just re-routes where the tokens land, and not just toggling whichever
+  flag was in place before) -- not yet tried.
 
 ## Alternatives considered
 
