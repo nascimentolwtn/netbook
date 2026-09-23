@@ -74,3 +74,16 @@ nothing for Phase 3 (the new Skill ID is what `ALEXA_SKILL_ID` in the
 netbook `.env` and the relay's `applicationId` check use), but any future
 reference to "the reused skill" should assume a fresh Skill ID, not the
 prototype's original one.
+
+### Update (2026-09-23, invocation name changed to "chat buddy")
+
+**The reused invocation name didn't survive either.** The Alexa Developer
+Console's Distribution tab flagged `"english talk pal"` against its
+ASR-collision rules -- the word "english" specifically. Renamed to
+`"chat buddy"` and confirmed on a real Echo for en-US (launch greeting
+plus a first Q&A both worked).
+
+What survived: the general "reuse rather than invent from scratch" stance.
+What didn't: the specific name. See [ADR 0017](0017-multi-locale-pt-br-support.md)'s
+own update -- this ADR's invocation-name decision is what pt-BR's parallel
+divergence (a different name per locale) amends.
