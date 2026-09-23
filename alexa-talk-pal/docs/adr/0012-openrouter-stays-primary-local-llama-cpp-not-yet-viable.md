@@ -4,6 +4,13 @@
 - Date: 2026-09-21
 - Deciders: solo (Luiz Wagner)
 
+> **Update (2026-09-22):** the "not yet viable" finding below no longer
+> holds — raising `max_tokens` for local-only calls fixed it cleanly, with
+> no meaningful latency cost. Local is now wired in as an opt-in backend.
+> "OpenRouter stays primary/default" is still the live decision, just for
+> a different reason now (LAN dependency, not a correctness bug). See
+> [ADR 0013](0013-configurable-local-backend-openrouter-stays-default.md).
+
 ## Context
 
 Backlog item 4 (Phase 4 option) asked whether the relay's OpenRouter call
