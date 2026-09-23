@@ -1,3 +1,4 @@
 .env
 relay/daily_counter.json
 relay/__pycache__/
+relay/tests/__pycache__/
