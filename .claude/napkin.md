@@ -13,8 +13,14 @@
 Source of truth for phase detail: `alexa-talk-pal/docs/architecture.md` §11.
 Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 
-1. **[2026-09-21] Phase 2: switch the reused skill's endpoint from Lambda ARN to HTTPS, edit interaction model off `TalkIntent` toward ADR 0005's shape**
-   Do instead: expect several "Save Model" failures (ADR 0005); keep the two-turn fallback (LaunchRequest asks the question, then captures the follow-up) ready if the single-shot slot won't validate. Endpoint switch is per ADR 0003/0009 — same Skill ID, new endpoint config. The stable HTTPS endpoint to enter is `https://viscous-landlady-reappoint.ngrok-free.dev/alexa` (backlog item 1 closed — see CHANGELOG 2026-09-22).
+1. **[2026-09-22] Before Phase 3 live-Echo test: OpenRouter's default model (`liquid/lfm-2.5-2.6b:free`) spoke raw reasoning text instead of a clean answer in the console simulator**
+   Do instead: this is the same hybrid-reasoning-leak failure mode ADR 0012/0013 fixed for the *local* backend (guardrail 6), but surfacing here on the *default* OpenRouter path via the live simulator, not caught by ADR 0011's latency-only testing. `ask_openrouter` in `relay/app.py` (~line 433) reads only `choices[0].message.content` with no reasoning-content stripping. Needs a fix (system-prompt instruction, `reasoning: {enabled: false}` if OpenRouter's API supports it for this model, or post-processing to strip a leaked `<think>` block) and a re-test in the simulator before declaring Plan 0003's MVP criteria met — T2/T3 require "relevant spoken answers," which this currently fails.
+
+2. **[2026-09-23] Make Alexa conversational with LLM-powered understanding (Alexa+ style)**
+   Do instead: Currently tightly bound to Alexa Skill command parsing. Add OpenRouter/local LLM layer to understand fluid conversation, maintain multi-turn context, and generate contextual responses beyond rigid slot-filling. Requires architecture design (token budget, latency SLA) and integration into relay. Phase 4 candidate per architecture.md §11 ("only if v1 earns it").
+
+3. **[2026-09-23] Add Portuguese-BR (pt-BR) language support**
+   Do instead: Extend Echo request locale handling and response generation to pt-BR. Affects: Alexa Skill locale routing, LLM prompt language selection, and TTS voice selection if speech output is added. Phase 4 candidate.
 
 *(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem, local-LLM-on-PC option — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
 

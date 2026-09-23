@@ -6,6 +6,31 @@ finishes.
 
 ## 2026-09-22
 
+- **Closed backlog item 2 (Phase 2, console side): skill endpoint switched to
+  HTTPS, interaction model replaced, console simulator gets real relay
+  replies.** Followed `docs/plans/0002-phase2-alexa-console-reconfiguration.md`.
+  Endpoint is `https://viscous-landlady-reappoint.ngrok-free.dev/alexa`
+  (wildcard SSL option); interaction model is Plan A's `AskAnythingIntent` +
+  `query` slot after two re-pastes to clear wizard-scaffold leftovers
+  (`HelloWorldIntent`, an `AMAZON.FallbackIntent` the relay doesn't handle,
+  wrong invocation name) and a stray bare `{query}` sample. Build succeeds;
+  Test-tab simulator gets real relay replies for launch, a question, help,
+  and stop. Utterance Profiler threw "Internal Server Error" twice on a
+  correctly-built model (an Amazon-side glitch, not ours) and was skipped in
+  favor of the simulator, which fully passed.
+  **Correction to ADR 0009**: the original "English Talk Pal" skill turned
+  out to be under a different Amazon account than the one the Echo uses, so
+  it was recreated from scratch rather than reused — invocation name and
+  locale carried over as planned, but the Skill ID is new. See
+  [ADR 0009's 2026-09-22 update](docs/adr/0009-reuse-prior-skill-id-and-invocation-name.md).
+  **Bug found, not fixed here** (napkin backlog item 1): on "tell me why the
+  sky is blue," the relay spoke OpenRouter's raw reasoning text instead of a
+  clean answer — the default model (`liquid/lfm-2.5-2.6b:free`) has the same
+  hybrid-reasoning-leak behavior ADR 0012/0013 fixed for the local backend,
+  but `ask_openrouter` does no reasoning-content handling. Routing itself
+  worked correctly (proves the endpoint + interaction model are fine).
+  Console reconfiguration is otherwise ready for the Phase 3 live-Echo test,
+  once that leak is fixed.
 - **Closed backlog item 1: signature verification now anchors to a real
   trust root via the system `openssl verify` CLI, before the Phase 2
   endpoint switch.** Planning (`docs/plans/0001-signature-verification-root-ca-decision.md`)
