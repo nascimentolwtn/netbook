@@ -1,0 +1,47 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "english talk pal",
+      "intents": [
+        { "name": "AMAZON.CancelIntent", "samples": [] },
+        { "name": "AMAZON.HelpIntent", "samples": [] },
+        { "name": "AMAZON.StopIntent", "samples": [] },
+        { "name": "AMAZON.NavigateHomeIntent", "samples": [] },
+        {
+          "name": "AskAnythingIntent",
+          "slots": [
+            { "name": "query", "type": "AMAZON.SearchQuery" }
+          ],
+          "samples": [
+            "pergunte {query}",
+            "eu quero perguntar {query}",
+            "tenho uma pergunta {query}",
+            "minha pergunta é {query}",
+            "pergunta {query}",
+            "pergunta rápida {query}",
+            "me diga {query}",
+            "diga {query}",
+            "por favor me diga {query}",
+            "você pode me dizer {query}",
+            "você poderia me dizer {query}",
+            "me fale sobre {query}",
+            "fale sobre {query}",
+            "eu quero saber {query}",
+            "quero saber {query}",
+            "eu gostaria de saber {query}",
+            "você sabe {query}",
+            "explique {query}",
+            "por favor explique {query}",
+            "você pode explicar {query}",
+            "eu me pergunto {query}",
+            "estava pensando {query}",
+            "quero sua opinião sobre {query}",
+            "me dê {query}",
+            "me pergunte {query}"
+          ]
+        }
+      ],
+      "types": []
+    }
+  }
+}
