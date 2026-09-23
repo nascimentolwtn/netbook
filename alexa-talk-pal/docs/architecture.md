@@ -427,7 +427,14 @@ Regardless of tier: set a **spend limit of $0** on the OpenRouter key while runn
 
 1. **Invocation name.** "talk pal"? Something more distinctive? Needs ASR testing against household accents — two-syllable pairs with common words tend to mis-trigger or get swallowed. Also decide the persona/name Alexa uses when answering.
 2. **Default free model.** Pick one from §8.2 and put it in the env file. Make it a one-line config change, and measure real end-to-end latency for two or three `:free` candidates in Phase 1 before deciding. Also decide the fallback (probably `openrouter/free`).
-3. **Conversation memory.** Start **stateless** — each query is independent. It's simplest, cheapest, and fastest. If follow-ups ("and why is that?") turn out to matter, the natural next step is keeping the last N turns in the Alexa `session.attributes` (which ASK round-trips for you, so the relay stays stateless and no storage is needed on the netbook). Decide only after using v1 for a week.
+3. **Conversation memory. Decided and implemented (2026-09-23, Plan 0005 /
+   ADR 0016).** Started stateless as planned; multi-turn history now lives
+   in Alexa `session.attributes` (last 5 turns, `conversation.py` owns
+   trim/build/append), round-tripped by ASK exactly as anticipated here —
+   the relay is still stateless at the filesystem level, no storage added
+   on the netbook. See ADR 0016 for the two gaps this surfaced (follow-up
+   routing via `AMAZON.FallbackIntent`, and making sure every non-ending
+   response path echoes history back) and how they were resolved.
 4. **Publish or not.** **Recommendation: stay in development mode.** It works indefinitely on Echo devices signed into the same Amazon account as the developer, requires no certification, no privacy policy URL, no icons/store listing, and no review cycle. Publishing would mean Amazon's full certification gauntlet for zero benefit on a personal assistant. (Caveat to verify: development-mode skills can require periodic re-enabling — confirm this doesn't require attention every few months.)
 5. **Ingress option.** ngrok free (§6.1, $0, auto-assigned ugly hostname) vs. Cloudflare Tunnel (§6.2, nicer but needs a ~$10/yr domain). Default is ngrok, purely on cost — revisit if a domain is already owned or if Phase 0 finds no 32-bit ngrok build.
 6. **Is 50 questions/day enough?** This is the sharpest free-tier limit (§8.1). Live with it, or spend the one-time $10 for 1,000/day? Recommendation: start free, measure a week of real usage, decide with data.
@@ -471,7 +478,12 @@ Regardless of tier: set a **spend limit of $0** on the OpenRouter key while runn
 - [ ] Let the household use it for a week; check the OpenRouter dashboard afterwards for **actual queries/day vs. the 50/day free cap** (spend should read $0.00). That number decides open question §10.6.
 
 ### Phase 4 — Polish (optional, only if v1 earns it)
-- [ ] Session-attribute conversation memory (§10.3).
+- [x] Session-attribute conversation memory (§10.3). Implemented 2026-09-23
+      via Plan 0005 / ADR 0016 — `conversation.py`, `ask_llm`/`alexa_response`
+      signature changes, `AMAZON.FallbackIntent` follow-up routing. Still
+      outstanding: real-Echo confirmation that a natural follow-up phrase
+      actually routes through it (needs Plan 0003's live-device testing,
+      Developer Console access this pass didn't have).
 - [ ] Progressive response directive for latency headroom (helps most on slow free endpoints).
 - [ ] Update `/README.md` to describe a **four**-app ecosystem, and add ADRs for the three decisive choices: *no local inference*, *tunnel over port-forwarding*, and *free-tier-only operation*.
 
