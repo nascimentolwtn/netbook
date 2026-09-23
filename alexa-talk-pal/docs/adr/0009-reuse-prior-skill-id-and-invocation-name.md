@@ -53,3 +53,24 @@ separately (not new-skill work):
 - **Create a brand-new skill** — rejected as unnecessary; Skill ID reuse
   carries no endpoint-type lock-in, so there's nothing gained by starting
   over.
+
+### Update (2026-09-22, Phase 2 console reconfiguration)
+
+**Skill ID reuse didn't happen.** When doing the endpoint/interaction-model
+edits from this ADR's follow-ups, the original "English Talk Pal" skill
+turned out to be registered under a different Amazon account than the one
+the Echo device actually uses — invisible until logging in to make the
+edit, since ADR 0006's "same account as the Echo" requirement was assumed
+already true, not re-verified at decision time. The skill was recreated
+from scratch under the correct account instead.
+
+What survived: the invocation name (`"english talk pal"`) and en-US
+locale, reused by choice as this ADR intended. What didn't: the Skill ID
+itself is new, and the endpoint/interaction-model edits (backlog items
+4–7, ADR 0003/0005) were applied to the new skill directly rather than as
+follow-on edits to a reused one. The "no new console skill-creation step"
+positive above did not hold in practice. Functionally this changes
+nothing for Phase 3 (the new Skill ID is what `ALEXA_SKILL_ID` in the
+netbook `.env` and the relay's `applicationId` check use), but any future
+reference to "the reused skill" should assume a fresh Skill ID, not the
+prototype's original one.
