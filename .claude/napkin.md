@@ -13,10 +13,7 @@
 Source of truth for phase detail: `alexa-talk-pal/docs/architecture.md` §11.
 Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 
-1. **[2026-09-21] Before Phase 2 live cutover: review/harden signature verification's missing root-CA path-building**
-   Do instead: `relay/app.py`'s `_verify_chain_signatures` checks internal chain-signature consistency, per-cert dates, SAN, and pins `SignatureCertChainUrl` to `s3.amazonaws.com`, but doesn't build a path to a locally trusted Amazon root (apt's `cryptography` 2.1.4 predates that API — see guardrail below). Decide explicitly whether the current mitigations are sufficient before wiring the real Alexa endpoint, or upgrade the crypto story.
-
-2. **[2026-09-21] Phase 2: switch the reused skill's endpoint from Lambda ARN to HTTPS, edit interaction model off `TalkIntent` toward ADR 0005's shape**
+1. **[2026-09-21] Phase 2: switch the reused skill's endpoint from Lambda ARN to HTTPS, edit interaction model off `TalkIntent` toward ADR 0005's shape**
    Do instead: expect several "Save Model" failures (ADR 0005); keep the two-turn fallback (LaunchRequest asks the question, then captures the follow-up) ready if the single-shot slot won't validate. Endpoint switch is per ADR 0003/0009 — same Skill ID, new endpoint config. The stable HTTPS endpoint to enter is `https://viscous-landlady-reappoint.ngrok-free.dev/alexa` (backlog item 1 closed — see CHANGELOG 2026-09-22).
 
 *(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem, local-LLM-on-PC option — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
@@ -40,8 +37,8 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 6. **[2026-09-22] Local llama.cpp server (192.168.4.55:11434, `LFM2.5-2.6B-Q4_K_M.gguf`) is wired in as `INFERENCE_BACKEND=local` — needs `LOCAL_LLM_MAX_TOKENS=500`, not OpenRouter's 150**
    Do instead: its hybrid reasoning shares the same token budget as the spoken answer and truncates (or returns empty) at 150 — fixed by raising `max_tokens` for local calls only, no server changes needed (ADR 0012/0013). Don't assume 8B-A1B is still loaded — check `GET /api/tags` or `/v1/models` before testing if the model might have changed again.
 
-7. **[2026-09-21] apt's `cryptography` 2.1.4 (ADR 0007) predates path-building APIs — signature verification can't build a trust path to a local Amazon root store**
-   Do instead: `relay/app.py`'s verification pins `SignatureCertChainUrl` to `s3.amazonaws.com`/`/echo.api/`, checks per-cert validity dates, the leaf SAN (`echo-api.amazon.com`), and chain-internal signatures — but not root-of-trust path validation. Don't rediscover this while debugging signature rejects; see backlog item 1 for the explicit go/no-go decision.
+7. **[2026-09-22] Signature verification is anchored to a real trust root via the system `openssl verify` CLI, not `cryptography`**
+   Do instead: apt's `cryptography` 2.1.4 (ADR 0007) still predates the `x509.verification` path-building API, so `relay/app.py`'s `_verify_chain_anchor` shells out to `openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt` on every cert-chain cache miss (ADR 0014) — fails closed on any non-zero exit/timeout/missing binary. Combined with URL hardening (reject `%`/dot-segments in `SignatureCertChainUrl`, no redirects) this closes both the missing-root-of-trust gap and an encoded-`../` traversal bypass. Don't rediscover this while debugging signature rejects; a real rejection means look at the logged `openssl` stderr, not add a bypass.
 
 8. **[2026-09-21] The OpenRouter account already has the $10 credit applied — daily free-tier cap is 1,000/day, not 50/day**
    Do instead: confirmed via `GET /api/v1/key` (`free_model_daily_requests` field) — don't assume the 50/day figure from architecture.md §8.1 still applies, and don't re-litigate whether to buy the $10 credit (already done). Check remaining quota the same way (small throwaway script on the netbook using the real `.env`, never printing the key itself) rather than guessing.

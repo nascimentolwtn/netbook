@@ -6,6 +6,35 @@ finishes.
 
 ## 2026-09-22
 
+- **Closed backlog item 1: signature verification now anchors to a real
+  trust root via the system `openssl verify` CLI, before the Phase 2
+  endpoint switch.** Planning (`docs/plans/0001-signature-verification-root-ca-decision.md`)
+  found two problems with the original "accept current checks, pin
+  Amazon's root fingerprint later" plan: the `/echo.api/` path check could
+  be bypassed with a percent-encoded `..` (safe on the netbook today only
+  by accident, via its older urllib3 version), and the planned pin design
+  would have pinned an intermediate cert, not a root (`certs[-1]` is never
+  the root in a correctly served chain). Implemented option (c) instead:
+  URL hardening (reject `%`/dot-segments in `SignatureCertChainUrl`, no
+  redirects, re-check the actual prepared URL) plus a new
+  `_verify_chain_anchor` that shells out to `openssl verify -CAfile
+  /etc/ssl/certs/ca-certificates.crt` on every cert-chain cache miss,
+  fail-closed on any non-zero exit, timeout, or missing binary. No
+  `cryptography`/Python upgrade needed or possible on this hardware (ADR
+  0007's reasoning holds). New `relay/tests/test_signature.py` (11 tests,
+  stdlib `unittest`, no network): 11/11 pass locally and on the netbook
+  relay venv (cryptography 2.1.4 needed explicit `backend=default_backend()`
+  in fixture generation that newer versions default automatically).
+  `openssl verify`'s exit-code/`: OK` contract confirmed by hand on the
+  netbook against a real chain (openrouter.ai) and a self-signed cert.
+  Deployed to `~/talkpal-relay/`, service restarted, smoke-tested with
+  `DEBUG_SKIP_SIGNATURE` off: `/health` 200 (local + public tunnel), an
+  unsigned POST to `/alexa` correctly gets `400 signature verification
+  failed`. No live Alexa traffic yet (still on the old Lambda ARN), so the
+  restart carried no live-request risk. See
+  [ADR 0014](docs/adr/0014-openssl-system-ca-anchor-for-signature-chain.md).
+  Phase 2 follow-up (capture the real chain, optionally narrow to a pinned
+  `echo-api-roots.pem`) stays blocked on the endpoint switch.
 - **Closed backlog item 3: local llama.cpp is now a switchable backend
   option (`INFERENCE_BACKEND=local`), OpenRouter stays the default**.
   The fix for the truncation bug ADR 0012 found: raise `max_tokens` for
