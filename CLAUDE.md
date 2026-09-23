@@ -94,3 +94,6 @@ See `/README.md` for full constraint table.
 - **Syncthing README:** `syncthing/README.md` — folder/device setup, secondary backup
 - **Syncthing docs:** https://docs.syncthing.net/
 - **dupe-sweep:** Runs on Windows PC at `/mnt/e/dev/dupe-sweep/` (not in this repo)
+- **alexa-talk-pal CLAUDE.md:** `alexa-talk-pal/CLAUDE.md` — a separate Alexa-skill relay project
+  living in this same repo, not part of the three-app photo ecosystem above; deploy steps for its
+  `relay/` code and its own ADRs live there, not here.
