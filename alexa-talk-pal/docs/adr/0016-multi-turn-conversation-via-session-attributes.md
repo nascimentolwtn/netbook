@@ -216,3 +216,100 @@ exception. This one path is not in plan §2.6's table.
   (plan §2.5 options 1/2) — not attempted; out of scope for this pass
   (requires Developer Console access and a rebuilt interaction model this
   environment can't exercise or test).
+
+### Update (2026-09-23, option 1 implemented: bare `{query}` catch-all)
+
+**The constraint that ruled out option 1 no longer holds.** This ADR
+rejected new sample utterances because it "requires Developer Console
+access and a rebuilt interaction model this environment can't exercise or
+test" (Alternatives, above). Real-Echo testing since then (console access,
+manual rebuilds) has been done directly by the user for the invocation-name
+work (ADR 0009/0017 updates), so that blocker is gone.
+
+**Trigger:** real-device testing surfaced gap #1's cost concretely — asking
+a bare follow-up question (no carrier phrase) either failed to route at all
+(pre-`AMAZON.FallbackIntent`) or, once Fallback was wired up, got the
+generic `FALLBACK_CONTINUATION_QUERY` nudge instead of an answer to the
+actual question, since Fallback requests never carry the real utterance
+text. This felt like "old Alexa" (must invoke a specific phrasing) rather
+than natural conversation, and no amount of relay-side logic can fix it —
+`AMAZON.FallbackIntent` structurally cannot see what was said.
+
+**Decision, attempt 1 (failed the console build):** a bare `"{query}"`
+sample utterance. Amazon rejects this outright at build time, not just a
+warning: `AMAZON.SearchQuery` is a "phrase type" slot, and ASK requires
+every sample utterance to contain at least one literal word alongside the
+slot -- "Sample intent utterances with phrase types cannot consist of only
+slots." A single-slot utterance is structurally disallowed, no workaround
+at the slot-type level.
+
+**Decision, attempt 2 (what's actually in place):** added several
+minimal, near-invisible filler-word carrier phrases to `AskAnythingIntent`
+in both `alexa/interaction-model.json` (`"so {query}"`, `"well {query}"`,
+`"um {query}"`, `"hey {query}"`, `"okay {query}"`, `"actually {query}"`)
+and `alexa/interaction-model.pt-BR.json` (`"então {query}"`,
+`"bom {query}"`, `"tipo {query}"`, `"é {query}"`, `"olha {query}"`) --
+alongside the existing carrier-phrase samples, not replacing them. These
+are words people plausibly say anyway when starting a casual question,
+rather than a deliberate command phrase like "tell me" or "explain", so
+the practical effect is close to free-form asking without literally
+satisfying it. A genuinely word-free bare question still won't match
+anything and falls to `AMAZON.FallbackIntent`'s weaker generic-continuation
+path (gap #1, unchanged by this update). Built-in intents
+(`AMAZON.StopIntent`, `AMAZON.CancelIntent`, `AMAZON.HelpIntent`) still
+take priority over the custom catch-all on an exact match -- this doesn't
+change the exit/help paths.
+
+**Side effect requiring a safety net:** pt-BR's built-in `AMAZON.StopIntent`
+phrase set is fixed by Amazon and not fully known ("pare"/"cancela" are
+presumably covered; word choices like "desligar" are not guaranteed to be).
+With the catch-all now live, an unrecognized exit phrase would previously
+have gone nowhere useful — now it would silently route to the LLM instead
+of exiting, which is worse. Added explicit extra samples
+(`"desligar"`, `"encerrar"`, `"sair"`) to `AMAZON.StopIntent` in the pt-BR
+model only, same mechanism as adding samples to any built-in intent.
+en-US's built-in Stop/Cancel coverage wasn't flagged as a gap, so it was
+left alone.
+
+**Not done:** `Dialog.ElicitSlot` (plan §2.5 option 2) — the bare catch-all
+resolves the practical problem without it; still unimplemented if a future
+need arises.
+
+**Research check: is there a real bypass of the carrier-phrase requirement?**
+Before settling on filler words, checked for a genuine community workaround
+to `AMAZON.SearchQuery`'s carrier-phrase rule, and for whether Alexa's
+native "flowing conversation" features apply here:
+- **Follow-Up Mode** and **Conversation Mode** (Echo Show 8 2nd
+  gen/Show 10 3rd gen only, camera-based) are real, free Amazon features
+  (not gated behind the Alexa+ subscription — it just auto-enables
+  Follow-Up Mode) that remove the need to repeat the wake word. Not
+  useful here: this skill already gets that effect for free from
+  `shouldEndSession: false` + `reprompt`, and there's no documentation
+  confirming Follow-Up Mode changes anything for a third-party custom
+  skill's session specifically.
+- **Alexa Conversations** (Amazon's separate ML-driven dialog-management
+  framework, an alternative to this classic interaction-model JSON)
+  explicitly does not support `AMAZON.SearchQuery` at all — a dead end
+  for this slot type without a full redesign.
+- One article claimed routing `AMAZON.FallbackIntent` to Amazon Lex
+  recovers the raw utterance text, bypassing the carrier-phrase rule
+  entirely. Treated as **not credible** rather than implemented: this
+  conflates two different products — Lex's own `FallbackIntent` does
+  carry `inputTranscript` because Lex owns its NLU pipeline directly, but
+  ASK's `FallbackIntent` (what this skill receives) structurally omits
+  the transcript from the request payload, matching what gap #1 above
+  already independently found. There's nothing to forward.
+- That same article's own fallback suggestion — "accept a minimal carrier
+  phrase" — is what shipped above. No stronger option surfaced.
+
+### Follow-ups (added 2026-09-23)
+- Real-Echo confirmation that a question prefixed with one of the new
+  minimal filler words reaches `AskAnythingIntent` with the correct
+  `query` text, on both locales, after the console rebuild -- not yet done
+  as of this update.
+- Watch for the catch-all swallowing something meant for a built-in intent
+  in practice (broader net than the old carrier-phrase-only samples); no
+  case has been observed yet.
+- If pt-BR "stop" still doesn't reliably exit after this, capture the
+  actual phrase used (Alexa app Activity/Voice History) and add it to
+  `AMAZON.StopIntent`'s samples the same way.

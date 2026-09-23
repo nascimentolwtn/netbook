@@ -5,7 +5,7 @@
       "intents": [
         { "name": "AMAZON.CancelIntent", "samples": [] },
         { "name": "AMAZON.HelpIntent", "samples": [] },
-        { "name": "AMAZON.StopIntent", "samples": [] },
+        { "name": "AMAZON.StopIntent", "samples": ["desligar", "encerrar", "sair"] },
         { "name": "AMAZON.NavigateHomeIntent", "samples": [] },
         { "name": "AMAZON.FallbackIntent", "samples": [] },
         {
@@ -38,7 +38,23 @@
             "estava pensando {query}",
             "quero sua opinião sobre {query}",
             "me dê {query}",
-            "me pergunte {query}"
+            "me pergunte {query}",
+            "então {query}",
+            "bom {query}",
+            "tipo {query}",
+            "é {query}",
+            "olha {query}",
+            "agora {query}",
+            "e {query}",
+            "hum {query}",
+            "mas {query}",
+            "assim {query}",
+            "ah {query}",
+            "espera {query}",
+            "também {query}",
+            "tá {query}",
+            "escuta {query}",
+            "por favor {query}"
           ]
         }
       ],

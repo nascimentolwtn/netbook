@@ -36,7 +36,27 @@
             "i wonder {query}",
             "i was wondering {query}",
             "what do you think about {query}",
-            "give me {query}"
+            "give me {query}",
+            "so {query}",
+            "well {query}",
+            "um {query}",
+            "hey {query}",
+            "okay {query}",
+            "actually {query}",
+            "now {query}",
+            "and {query}",
+            "hmm {query}",
+            "but {query}",
+            "like {query}",
+            "oh {query}",
+            "wait {query}",
+            "also {query}",
+            "yeah {query}",
+            "right {query}",
+            "listen {query}",
+            "look {query}",
+            "please {query}",
+            "though {query}"
           ]
         }
       ],
