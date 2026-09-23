@@ -12,6 +12,14 @@ DEBUG_SKIP_SIGNATURE (env var, default OFF) bypasses Alexa signature
 verification for local/dev testing only. It must stay unset/false in any
 real deployment — signature verification is the front door lock
 (architecture.md §9.2).
+
+Locale (docs/plans/0004) and multi-turn conversation (docs/plans/0005)
+were implemented in parallel on separate branches, each against the
+unmodified single-turn baseline, then reconciled here into the combined
+target signature both plans call for: `ask_llm(query, locale,
+conversation_history=None)` (plan 0005 §14 / plan 0004 §11). See
+docs/adr/0016 and docs/adr/0017 for each plan's individual decisions;
+this file is the merge of both.
 """
 import base64
 import json
@@ -31,11 +39,14 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
-from fallback_messages import (
-    GENERIC_ERROR_MESSAGE as GENERIC_ERROR_FALLBACK,
-    QUOTA_EXHAUSTED_MESSAGE as QUOTA_EXHAUSTED_FALLBACK,
-    TIMEOUT_MESSAGE as TIMEOUT_FALLBACK,
+from conversation import (
+    append_to_history,
+    build_messages_with_history,
+    extract_conversation_history,
+    session_attributes_from_history,
+    trim_conversation_history,
 )
+from fallback_messages import get_messages
 
 load_dotenv()
 
@@ -80,13 +91,125 @@ OPENROUTER_CONNECT_TIMEOUT = 2
 OPENROUTER_READ_TIMEOUT = 5
 OPENROUTER_MAX_TOKENS = int(os.environ.get("OPENROUTER_MAX_TOKENS", "500") or "500")
 
-VOICE_SYSTEM_PROMPT = (
-    "You are a helpful voice assistant answering a spoken question. "
-    "Reply in 2 to 4 short sentences of plain spoken prose. Do not use "
-    "markdown, bullet lists, code, emoji, or URLs -- your reply will be "
-    "read aloud exactly as written. Only give your final answer -- never "
-    "show your reasoning, thinking, or planning process."
-)
+# ---------------------------------------------------------------------------
+# Locale support (docs/plans/0004). Alexa's wire format is hyphenated
+# BCP-47 ("pt-BR", "en-US") -- see _normalize_locale.
+# ---------------------------------------------------------------------------
+DEFAULT_LOCALE = "en_US"
+
+# Internal locale keys the relay actually has content for.
+SUPPORTED_LOCALE_KEYS = ("en_US", "pt_BR")
+
+
+def _normalize_locale(raw_locale):
+    """Normalizes a locale string to one of SUPPORTED_LOCALE_KEYS.
+
+    Alexa sends `request.locale` hyphenated per BCP-47 (e.g. "pt-BR",
+    "en-US") -- that's the real wire format this normalizes from, not an
+    underscore form. Accepts underscore input too (e.g. "pt_BR") since
+    it's a trivial superset to support. Case-insensitive. Falls back to
+    DEFAULT_LOCALE for anything missing, malformed, or not one of the
+    locales this relay has content for.
+    """
+    if not raw_locale or not isinstance(raw_locale, str):
+        return DEFAULT_LOCALE
+    normalized = raw_locale.strip().replace("-", "_")
+    for key in SUPPORTED_LOCALE_KEYS:
+        if normalized.lower() == key.lower():
+            return key
+    return DEFAULT_LOCALE
+
+
+def _extract_locale(parsed_body):
+    """Reads `request.locale` from an Alexa request payload and normalizes
+    it to an internal locale key. Defaults to DEFAULT_LOCALE if the field
+    is missing, the payload is malformed, or the locale isn't one this
+    relay has content for."""
+    try:
+        raw_locale = (parsed_body.get("request") or {}).get("locale")
+    except AttributeError:
+        raw_locale = None
+    return _normalize_locale(raw_locale)
+
+
+# Single-turn system prompts (docs/plans/0004) -- kept as a reference point
+# (ADR 0015 discusses the en_US text) but no longer read by any live code
+# path: every turn now goes through the multi-turn message-building
+# pipeline below, even a first turn with no history yet (plan 0005 §2.2).
+SYSTEM_PROMPTS = {
+    "en_US": (
+        "You are a helpful voice assistant answering a spoken question. "
+        "Reply in 2 to 4 short sentences of plain spoken prose. Do not use "
+        "markdown, bullet lists, code, emoji, or URLs -- your reply will be "
+        "read aloud exactly as written. Only give your final answer -- never "
+        "show your reasoning, thinking, or planning process."
+    ),
+    "pt_BR": (
+        "Você é um assistente de voz útil respondendo a uma pergunta falada. "
+        "Responda em português do Brasil, em 2 a 4 frases curtas de prosa "
+        "falada simples. Não use markdown, listas, código, emojis ou URLs "
+        "-- sua resposta será lida em voz alta exatamente como está escrita. "
+        "Dê apenas a resposta final -- nunca mostre seu raciocínio, "
+        "pensamento ou planejamento."
+    ),
+}
+VOICE_SYSTEM_PROMPT = SYSTEM_PROMPTS[DEFAULT_LOCALE]
+
+# Live, per-locale, multi-turn-aware system prompts (docs/plans/0005 §2.2 +
+# docs/plans/0004 §11: "the combined result is a per-locale, per-mode
+# matrix ... four prompts, not two"). Every request, single-turn or
+# multi-turn, builds its message list with one of these.
+CONVERSATIONAL_SYSTEM_PROMPTS = {
+    "en_US": (
+        "You are a helpful voice assistant in an ongoing conversation. "
+        "You have access to previous turns in this conversation. "
+        "Reply in 2 to 4 short sentences of plain spoken prose. "
+        "Do not use markdown, bullet lists, code, emoji, or URLs -- "
+        "your reply will be read aloud exactly as written. "
+        "If the user asks a follow-up (e.g., 'tell me more', 'and why', 'how'), "
+        "reference the prior context to give a natural continuation."
+    ),
+    "pt_BR": (
+        "Você é um assistente de voz útil em uma conversa em andamento. "
+        "Você tem acesso aos turnos anteriores desta conversa. "
+        "Responda em português do Brasil, em 2 a 4 frases curtas de prosa "
+        "falada simples. Não use markdown, listas, código, emojis ou URLs "
+        "-- sua resposta será lida em voz alta exatamente como está escrita. "
+        "Se o usuário fizer uma pergunta de continuação (por exemplo, "
+        "'me conta mais', 'e por quê', 'como'), use o contexto anterior "
+        "para dar uma continuação natural."
+    ),
+}
+# Back-compat alias (en_US) -- measure_latency.py and pre-locale tests
+# import this bare name.
+CONVERSATIONAL_SYSTEM_PROMPT = CONVERSATIONAL_SYSTEM_PROMPTS[DEFAULT_LOCALE]
+
+
+def _conversational_system_prompt_for_locale(locale):
+    return CONVERSATIONAL_SYSTEM_PROMPTS.get(locale, CONVERSATIONAL_SYSTEM_PROMPTS[DEFAULT_LOCALE])
+
+
+# Synthetic "user query" sent to the LLM when AMAZON.FallbackIntent fires
+# with existing conversation history (plan 0005 §2.5, option 3).
+# FallbackIntent requests never carry the raw utterance Alexa's NLU
+# couldn't match, so there's no real query text to forward -- this stands
+# in for a bare follow-up like "tell me more" or "and why" that didn't
+# match AskAnythingIntent's carrier-phrase samples. It gets appended to
+# history as the "user" turn, same as any other query. Locale-keyed so a
+# Portuguese session doesn't get an English line injected into its history
+# (plan 0004 §2.6's "no mixed-language history" principle, extended to
+# this synthetic query -- neither plan anticipated this intersection on
+# its own, so this is new work done as part of reconciling the two).
+FALLBACK_CONTINUATION_QUERIES = {
+    "en_US": "Please continue based on what we were just discussing.",
+    "pt_BR": "Por favor, continue com base no que estávamos discutindo.",
+}
+FALLBACK_CONTINUATION_QUERY = FALLBACK_CONTINUATION_QUERIES[DEFAULT_LOCALE]
+
+
+def _fallback_continuation_query(locale):
+    return FALLBACK_CONTINUATION_QUERIES.get(locale, FALLBACK_CONTINUATION_QUERIES[DEFAULT_LOCALE])
+
 
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>(.*?)</think>", re.IGNORECASE | re.DOTALL)
 _THINK_OPEN_RE = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
@@ -109,30 +232,70 @@ def _strip_leaked_reasoning(text):
         return ""
     return text
 
-# Timeout / quota-exhausted / generic-error lines come from
-# fallback_messages.py (imported above). Rate limit isn't one of that
-# module's three cases, so it stays local.
-RATE_LIMIT_FALLBACK = "I'm getting a lot of questions right now. Try again in a minute?"
-HELP_TEXT = "You can ask me pretty much anything -- just ask a question and I'll do my best to answer."
-GOODBYE_TEXT = "Goodbye."
-LAUNCH_GREETING = "Hi, what would you like to ask?"
-NO_QUERY_TEXT = "Sorry, I didn't catch a question. What would you like to ask?"
+
+# Locale-aware response strings for fixed (non-LLM) turns (docs/plans/0004
+# §6 Phase 1.3). Timeout / quota-exhausted / generic-error text comes from
+# fallback_messages.get_messages() instead, keyed the same way.
+RESPONSE_TEXTS = {
+    "en_US": {
+        "HELP": "You can ask me pretty much anything -- just ask a question and I'll do my best to answer.",
+        "GOODBYE": "Goodbye.",
+        "LAUNCH": "Hi, what would you like to ask?",
+        "NO_QUERY": "Sorry, I didn't catch a question. What would you like to ask?",
+        "RATE_LIMIT": "I'm getting a lot of questions right now. Try again in a minute?",
+    },
+    "pt_BR": {
+        "HELP": "Você pode me perguntar praticamente qualquer coisa -- é só fazer uma pergunta que eu farei o meu melhor para responder.",
+        "GOODBYE": "Até logo.",
+        "LAUNCH": "Oi, o que você gostaria de perguntar?",
+        "NO_QUERY": "Desculpe, não entendi a pergunta. O que você gostaria de perguntar?",
+        "RATE_LIMIT": "Estou recebendo muitas perguntas agora. Tente de novo daqui a um minuto?",
+    },
+}
+
+
+def _get_response_text(key, locale):
+    """Returns the locale-specific response string for `key`. Falls back
+    to en_US if the locale (or, defensively, the key itself) isn't found
+    -- _extract_locale already normalizes to a supported key, but this
+    stays safe if called with something else."""
+    texts = RESPONSE_TEXTS.get(locale) or RESPONSE_TEXTS[DEFAULT_LOCALE]
+    return texts.get(key, RESPONSE_TEXTS[DEFAULT_LOCALE].get(key))
+
+
+# Back-compat flat aliases (en_US) -- test_multiturn.py and any other
+# pre-locale caller reference these bare names directly.
+HELP_TEXT = RESPONSE_TEXTS[DEFAULT_LOCALE]["HELP"]
+GOODBYE_TEXT = RESPONSE_TEXTS[DEFAULT_LOCALE]["GOODBYE"]
+LAUNCH_GREETING = RESPONSE_TEXTS[DEFAULT_LOCALE]["LAUNCH"]
+NO_QUERY_TEXT = RESPONSE_TEXTS[DEFAULT_LOCALE]["NO_QUERY"]
+RATE_LIMIT_FALLBACK = RESPONSE_TEXTS[DEFAULT_LOCALE]["RATE_LIMIT"]
+GENERIC_ERROR_FALLBACK = get_messages(DEFAULT_LOCALE)["GENERIC_ERROR"]
+QUOTA_EXHAUSTED_FALLBACK = get_messages(DEFAULT_LOCALE)["QUOTA_EXHAUSTED"]
+TIMEOUT_FALLBACK = get_messages(DEFAULT_LOCALE)["TIMEOUT"]
 
 
 # ---------------------------------------------------------------------------
 # Alexa response shaping
 # ---------------------------------------------------------------------------
-def alexa_response(speech_text, end_session=False):
-    """Shape a minimal valid Alexa Skills Kit response body."""
-    return jsonify(
-        {
-            "version": "1.0",
-            "response": {
-                "outputSpeech": {"type": "PlainText", "text": speech_text},
-                "shouldEndSession": end_session,
-            },
-        }
-    )
+def alexa_response(speech_text, end_session=False, session_attributes=None):
+    """Shape a minimal valid Alexa Skills Kit response body.
+
+    `session_attributes` is only included in the response when not None
+    (plan 0005 §3.3) -- every call site that doesn't end the session must
+    pass the current conversation history through explicitly (plan §2.6);
+    there's no implicit default that does the right thing by omission.
+    """
+    resp = {
+        "version": "1.0",
+        "response": {
+            "outputSpeech": {"type": "PlainText", "text": speech_text},
+            "shouldEndSession": end_session,
+        },
+    }
+    if session_attributes is not None:
+        resp["sessionAttributes"] = session_attributes
+    return jsonify(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -423,23 +586,27 @@ class OpenRouterRateLimited(Exception):
     pass
 
 
-def _call_chat_completions(base_url, model, query, api_key=None, max_tokens=OPENROUTER_MAX_TOKENS):
+def _call_chat_completions(base_url, model, messages, api_key=None, max_tokens=OPENROUTER_MAX_TOKENS):
     """POSTs an OpenAI-compatible /chat/completions request. Generic over
     the target -- OpenRouter needs a bearer token, a local llama.cpp
     server (measure_latency.py --base-url) doesn't. max_tokens is
     overridable per-backend: OpenRouter's default (150) is too tight for
     the local server's hybrid reasoning, which shares the same budget as
-    the spoken answer and was getting truncated (ADR 0012)."""
+    the spoken answer and was getting truncated (ADR 0012).
+
+    `messages` is the full message list (locale-selected system prompt +
+    any conversation history + current query) built by
+    `conversation.build_messages_with_history` -- this function no longer
+    builds messages itself (plan 0005 §3.2/§6a); callers own message
+    construction so multi-turn history and locale selection don't need a
+    second signature change here."""
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer {}".format(api_key)
     payload = {
         "model": model,
         "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": VOICE_SYSTEM_PROMPT},
-            {"role": "user", "content": query},
-        ],
+        "messages": messages,
     }
     return requests.post(
         base_url,
@@ -449,13 +616,13 @@ def _call_chat_completions(base_url, model, query, api_key=None, max_tokens=OPEN
     )
 
 
-def _call_openrouter(model, query):
-    return _call_chat_completions(OPENROUTER_URL, model, query, api_key=OPENROUTER_API_KEY)
+def _call_openrouter(model, messages):
+    return _call_chat_completions(OPENROUTER_URL, model, messages, api_key=OPENROUTER_API_KEY)
 
 
-def _call_local_llm(query):
+def _call_local_llm(messages):
     return _call_chat_completions(
-        LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL, query, max_tokens=LOCAL_LLM_MAX_TOKENS
+        LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL, messages, max_tokens=LOCAL_LLM_MAX_TOKENS
     )
 
 
@@ -479,39 +646,70 @@ def _extract_spoken_text(data):
     return text
 
 
-def ask_openrouter(query):
+def ask_openrouter(messages):
     """Returns spoken text. Raises OpenRouterRateLimited if both the
     primary and (if configured) fallback model return 429; raises other
     exceptions (timeouts, HTTP errors, bad JSON shape, empty content) for
     the caller to turn into a graceful fallback -- never lets them escape
-    as a 500 (architecture.md §5.3)."""
-    resp = _call_openrouter(OPENROUTER_MODEL, query)
+    as a 500 (architecture.md §5.3).
+
+    `messages` is the full message list built by `ask_llm` -- this
+    function is backend-agnostic and doesn't know or care whether it
+    carries conversation history or which locale's system prompt it
+    contains (plan 0005 §5.5)."""
+    resp = _call_openrouter(OPENROUTER_MODEL, messages)
     if resp.status_code == 429 and OPENROUTER_FALLBACK_MODEL:
-        resp = _call_openrouter(OPENROUTER_FALLBACK_MODEL, query)
+        resp = _call_openrouter(OPENROUTER_FALLBACK_MODEL, messages)
     if resp.status_code == 429:
         raise OpenRouterRateLimited()
     resp.raise_for_status()
     return _extract_spoken_text(resp.json())
 
 
-def ask_local_llm(query):
+def ask_local_llm(messages):
     """Returns spoken text from the local llama.cpp server. No fallback
     model, no 429 handling (single private server, no rate limit) --
     just a hard timeout/error like any other backend failure, caught by
     the same generic exception handling as ask_openrouter (§5.3)."""
-    resp = _call_local_llm(query)
+    resp = _call_local_llm(messages)
     resp.raise_for_status()
     return _extract_spoken_text(resp.json())
 
 
-def ask_llm(query):
+def ask_llm(query, locale=DEFAULT_LOCALE, conversation_history=None):
     """Dispatches to the configured backend. Default is OpenRouter;
     INFERENCE_BACKEND=local hard-switches to the Windows PC llama.cpp
     server -- no automatic fallback between the two backends themselves
-    (ADR 0013)."""
+    (ADR 0013).
+
+    This is the combined signature both plans targeted (plan 0005 §14 /
+    plan 0004 §11): `locale` (docs/plans/0004) selects the system prompt
+    language; `conversation_history` (docs/plans/0005) carries prior
+    {role, content} turns, already trimmed by the caller
+    (conversation.trim_conversation_history) -- this function does not
+    re-trim.
+
+    query: current user question (or, for AMAZON.FallbackIntent,
+        the locale-appropriate FALLBACK_CONTINUATION_QUERIES entry).
+
+    Returns: (answer_text, updated_history) -- `answer_text` is the
+    cleaned, spoken text (post `_strip_leaked_reasoning`);
+    `updated_history` is `conversation_history` with this turn's real
+    user query and real LLM answer appended. Never call this and then
+    store a canned fallback string as if it were `updated_history`'s new
+    assistant turn -- if this raises, there is no `updated_history` to
+    use; callers must echo the *input* history unchanged instead (plan
+    0005 §2.6, §3.2)."""
+    system_prompt = _conversational_system_prompt_for_locale(locale)
+    messages = build_messages_with_history(
+        query, conversation_history=conversation_history, system_prompt=system_prompt
+    )
     if INFERENCE_BACKEND == "local":
-        return ask_local_llm(query)
-    return ask_openrouter(query)
+        answer = ask_local_llm(messages)
+    else:
+        answer = ask_openrouter(messages)
+    updated_history = append_to_history(conversation_history, query, answer)
+    return answer, updated_history
 
 
 # ---------------------------------------------------------------------------
@@ -522,30 +720,79 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
-def _handle_ask_anything(intent):
+def _respond_with_llm(query, locale, current_history):
+    """Shared quota-check / ask_llm / exception-handling / response-shaping
+    flow for both AskAnythingIntent (real query text) and
+    AMAZON.FallbackIntent (locale-appropriate continuation query, plan
+    0005 §2.5 option 3). Single implementation so the plan §2.6
+    history-echo discipline (every non-ending fallback path echoes
+    `current_history` back unchanged; only the success path appends and
+    echoes the new turn) can't drift between the two call sites, and so
+    locale-aware fallback text (plan 0004) and history echoing (plan 0005)
+    can't drift from each other either."""
+    echo = session_attributes_from_history(current_history)
+    messages = get_messages(locale)
+
+    if not check_and_increment_quota():
+        return alexa_response(messages["QUOTA_EXHAUSTED"], end_session=True)
+
+    try:
+        speech, updated_history = ask_llm(query, locale=locale, conversation_history=current_history)
+    except OpenRouterRateLimited:
+        return alexa_response(
+            _get_response_text("RATE_LIMIT", locale), end_session=False, session_attributes=echo
+        )
+    except requests.exceptions.Timeout:
+        return alexa_response(messages["TIMEOUT"], end_session=False, session_attributes=echo)
+    except Exception as exc:  # noqa: broad -- never let anything escape as a 500
+        app.logger.exception("LLM call failed (backend=%s): %s", INFERENCE_BACKEND, exc)
+        return alexa_response(messages["GENERIC_ERROR"], end_session=False, session_attributes=echo)
+
+    if not speech:
+        return alexa_response(messages["GENERIC_ERROR"], end_session=False, session_attributes=echo)
+
+    return alexa_response(
+        speech, end_session=False, session_attributes=session_attributes_from_history(updated_history)
+    )
+
+
+def _handle_ask_anything(intent, locale, current_history):
     slots = (intent or {}).get("slots") or {}
     query = (slots.get("query") or {}).get("value")
 
     if not query:
-        return alexa_response(NO_QUERY_TEXT, end_session=False)
+        return alexa_response(
+            _get_response_text("NO_QUERY", locale),
+            end_session=False,
+            session_attributes=session_attributes_from_history(current_history),
+        )
 
-    if not check_and_increment_quota():
-        return alexa_response(QUOTA_EXHAUSTED_FALLBACK, end_session=True)
+    return _respond_with_llm(query, locale, current_history)
 
-    try:
-        speech = ask_llm(query)
-    except OpenRouterRateLimited:
-        return alexa_response(RATE_LIMIT_FALLBACK, end_session=False)
-    except requests.exceptions.Timeout:
-        return alexa_response(TIMEOUT_FALLBACK, end_session=False)
-    except Exception as exc:  # noqa: broad -- never let anything escape as a 500
-        app.logger.exception("LLM call failed (backend=%s): %s", INFERENCE_BACKEND, exc)
-        return alexa_response(GENERIC_ERROR_FALLBACK, end_session=False)
 
-    if not speech:
-        return alexa_response(GENERIC_ERROR_FALLBACK, end_session=False)
+def _handle_fallback_intent(locale, current_history):
+    """AMAZON.FallbackIntent -- Alexa's NLU routed an utterance it
+    couldn't match to any configured intent. In practice this is most
+    often a bare follow-up phrase ("tell me more", "and why") that
+    AskAnythingIntent's carrier-phrase-plus-slot sample utterances don't
+    cover (plan 0005 §2.5, "critical design gap #1", option 3). A
+    FallbackIntent request never carries the raw utterance text, so there
+    is no real query to extract here -- only whatever conversation history
+    is already in session.attributes.
 
-    return alexa_response(speech, end_session=False)
+    With no history yet, there's nothing to continue -- this can't be a
+    follow-up to anything, so it gets the same "didn't catch a question"
+    treatment as an AskAnythingIntent with an empty slot. With history,
+    treat it as an implicit continuation request and let the LLM use the
+    stored context via the locale-appropriate continuation query."""
+    if not current_history:
+        return alexa_response(
+            _get_response_text("NO_QUERY", locale),
+            end_session=False,
+            session_attributes=session_attributes_from_history(current_history),
+        )
+
+    return _respond_with_llm(_fallback_continuation_query(locale), locale, current_history)
 
 
 @app.route("/alexa", methods=["POST"])
@@ -574,14 +821,30 @@ def alexa():
         app.logger.warning("applicationId mismatch: got %r", application_id)
         return jsonify({"error": "applicationId mismatch"}), 400
 
+    # Locale extraction is defensive (never raises) and locale-agnostic
+    # w.r.t. trust, so it's fine to compute before the try below -- that
+    # way the last-resort except also has a locale to respond in.
+    locale = _extract_locale(parsed_body)
+
     # Everything past this point is a trusted, well-formed Alexa request --
     # but we still never let an internal bug surface as a 500 (§5.3).
     try:
         req = parsed_body.get("request") or {}
         req_type = req.get("type")
 
+        # Extract + trim conversation history up front (plan 0005 §2.4
+        # steps 1-2) so every branch below has it available. extract_ is
+        # defensive (never raises, skips malformed entries); trim_ caps it
+        # at 5 turns. LaunchRequest deliberately ignores this (below) --
+        # a new launch always starts fresh, regardless of what's stored.
+        session_attrs = (parsed_body.get("session") or {}).get("attributes") or {}
+        current_history = trim_conversation_history(extract_conversation_history(session_attrs))
+
         if req_type == "LaunchRequest":
-            return alexa_response(LAUNCH_GREETING, end_session=False)
+            # No session_attributes passed -- deliberate (plan 0005 §2.6
+            # table): a new launch starts a fresh conversation, not a
+            # continuation of whatever was stored from a prior session.
+            return alexa_response(_get_response_text("LAUNCH", locale), end_session=False)
 
         if req_type == "SessionEndedRequest":
             return "", 200
@@ -590,17 +853,31 @@ def alexa():
             intent = req.get("intent") or {}
             intent_name = intent.get("name")
             if intent_name in ("AMAZON.StopIntent", "AMAZON.CancelIntent"):
-                return alexa_response(GOODBYE_TEXT, end_session=True)
+                return alexa_response(_get_response_text("GOODBYE", locale), end_session=True)
             if intent_name == "AMAZON.HelpIntent":
-                return alexa_response(HELP_TEXT, end_session=False)
+                return alexa_response(
+                    _get_response_text("HELP", locale),
+                    end_session=False,
+                    session_attributes=session_attributes_from_history(current_history),
+                )
             if intent_name == "AskAnythingIntent":
-                return _handle_ask_anything(intent)
-            return alexa_response(GENERIC_ERROR_FALLBACK, end_session=False)
+                return _handle_ask_anything(intent, locale, current_history)
+            if intent_name == "AMAZON.FallbackIntent":
+                return _handle_fallback_intent(locale, current_history)
+            return alexa_response(
+                get_messages(locale)["GENERIC_ERROR"],
+                end_session=False,
+                session_attributes=session_attributes_from_history(current_history),
+            )
 
-        return alexa_response(GENERIC_ERROR_FALLBACK, end_session=False)
+        return alexa_response(
+            get_messages(locale)["GENERIC_ERROR"],
+            end_session=False,
+            session_attributes=session_attributes_from_history(current_history),
+        )
     except Exception as exc:  # noqa: broad -- last-resort safety net
         app.logger.exception("Unhandled error in /alexa: %s", exc)
-        return alexa_response(GENERIC_ERROR_FALLBACK, end_session=False)
+        return alexa_response(get_messages(locale)["GENERIC_ERROR"], end_session=False)
 
 
 if __name__ == "__main__":
