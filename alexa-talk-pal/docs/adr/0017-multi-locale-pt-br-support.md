@@ -171,3 +171,36 @@ plan's §11 are explicitly deferred to whoever reconciles the two branches.
   not followed; the two plans were implemented in parallel on separate
   branches by design of this work session, with reconciliation deferred
   (see Context and Consequences).
+
+### Update (2026-09-23, per-locale invocation names after real-Echo testing)
+
+**The shared-invocation-name decision above didn't hold.** This ADR's
+Decision section (and its "Distinct Portuguese invocation name" rejection
+under Alternatives) called reusing one phrase across both locales the
+lowest-risk option, needing no ASR-collision testing. Real testing on a
+real Echo (bilingual en-US + pt-BR device) showed otherwise: en-US's
+invocation name itself first had to change from `"english talk pal"` to
+`"chat buddy"` (ADR 0009's update, unrelated ASR-collision rejection),
+and that new name, spoken as `"abrir Chat Buddy"`, was not recognized in
+Portuguese -- even though the same device correctly handles other
+ordinary Portuguese utterances (confirmed with built-in commands, both
+`"tell me a joke"` and `"conte-me uma piada"` worked). That rules out a
+device-language-configuration explanation; the mixed-language phrase
+itself doesn't fit pt-BR's ASR vocabulary.
+
+**Revised decision:** en-US and pt-BR now use independent invocation
+names -- en-US keeps `"chat buddy"`; pt-BR uses `"papo amigo"` ("friendly
+chat"), chosen for being common, everyday Portuguese words with no
+English loanwords. This needed no relay code change: `invocationName` was
+already a per-locale field in each interaction model
+(`alexa/interaction-model.json` / `alexa/interaction-model.pt-BR.json`),
+so the two locales were never actually coupled at the code level, only by
+this ADR's stated choice to keep their values equal.
+
+### Follow-ups (added 2026-09-23)
+- Once `"papo amigo"` is live and Built for the pt-BR locale, confirm on
+  a real Echo that it's recognized (mirroring the en-US confirmation
+  above) -- not yet done as of this update.
+- If future locales are added, default to letting each pick its own
+  invocation name rather than assuming a shared phrase will work; treat a
+  shared name as something to verify, not assume.
