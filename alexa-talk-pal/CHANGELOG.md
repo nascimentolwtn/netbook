@@ -4,6 +4,27 @@ Completed planning/decision milestones. Build-phase work (see
 `docs/architecture.md` §11) moves here from the napkin backlog as each item
 finishes.
 
+## 2026-09-23
+
+- **Closed backlog item 1: OpenRouter reasoning-leak bug fixed.** The bug
+  found in Phase 2 console testing (relay spoke raw reasoning text instead
+  of a clean answer) turned out to be ADR 0012's bug again, on a different
+  backend: `liquid/lfm-2.5-2.6b:free` has *mandatory* hybrid reasoning on
+  OpenRouter's free endpoint (`reasoning: {enabled: false}` is rejected
+  outright), and it was consistently burning ~148-150 of the hardcoded
+  150-token budget, leaving `content` empty with `finish_reason: "length"`.
+  Fixed by raising `OPENROUTER_MAX_TOKENS` to an env-configurable 500 (same
+  value ADR 0013 chose for the local backend), plus a shared
+  `_strip_leaked_reasoning` helper used by both `ask_openrouter` and
+  `ask_local_llm` as defense-in-depth against an inline `<think>` leak.
+  Verified live against multiple repro queries: `finish_reason` now `"stop"`,
+  clean short answers, latency still 0.8-1.3s. Deployed to the netbook,
+  service restarted, `relay/tests/test_signature.py` still 11/11 (unrelated
+  code, unaffected). See
+  [ADR 0015](docs/adr/0015-openrouter-max-tokens-500-plus-reasoning-strip.md).
+  Phase 2 console reconfiguration + this fix together close out everything
+  blocking Plan 0003's live-Echo test.
+
 ## 2026-09-22
 
 - **Closed backlog item 2 (Phase 2, console side): skill endpoint switched to
