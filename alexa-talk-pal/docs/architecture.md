@@ -180,7 +180,7 @@ Full manual validation means all of:
 
 1. Read `SignatureCertChainUrl` header; verify the URL is `https`, host is `s3.amazonaws.com`, port 443, path starts with `/echo.api/`, and normalize it (protect against `../` traversal).
 2. Download and **cache** that PEM chain (don't refetch per request — that alone could blow the latency budget on a slow Atom).
-3. Verify the cert chain validates to a trusted root, is currently within its validity window, and has `echo-api.amazon.com` in its SAN list.
+3. Verify the cert chain validates to a trusted root, is currently within its validity window, and has `echo-api.amazon.com` in its SAN list. Implemented via the system `openssl verify` CLI against `/etc/ssl/certs/ca-certificates.crt` (ADR 0014) — apt's `cryptography` 2.1.4 (ADR 0007) predates the `x509.verification` path-building API, so real RFC 5280 path validation is delegated to OpenSSL 1.1.1 rather than hand-rolled or deferred.
 4. Base64-decode the `Signature` header and verify it (SHA1withRSA) against the **raw request body bytes** using the cert's public key. *Raw bytes* — re-serializing the parsed JSON will fail.
 5. Reject requests whose `request.timestamp` is more than 150 seconds old (replay protection).
 6. Check `session.application.applicationId` matches our skill ID.
