@@ -243,6 +243,7 @@ RESPONSE_TEXTS = {
         "LAUNCH": "Hi, what would you like to ask?",
         "NO_QUERY": "Sorry, I didn't catch a question. What would you like to ask?",
         "RATE_LIMIT": "I'm getting a lot of questions right now. Try again in a minute?",
+        "REPROMPT": "What would you like to ask?",
     },
     "pt_BR": {
         "HELP": "Você pode me perguntar praticamente qualquer coisa -- é só fazer uma pergunta que eu farei o meu melhor para responder.",
@@ -250,6 +251,7 @@ RESPONSE_TEXTS = {
         "LAUNCH": "Oi, o que você gostaria de perguntar?",
         "NO_QUERY": "Desculpe, não entendi a pergunta. O que você gostaria de perguntar?",
         "RATE_LIMIT": "Estou recebendo muitas perguntas agora. Tente de novo daqui a um minuto?",
+        "REPROMPT": "O que você gostaria de perguntar?",
     },
 }
 
@@ -270,6 +272,7 @@ GOODBYE_TEXT = RESPONSE_TEXTS[DEFAULT_LOCALE]["GOODBYE"]
 LAUNCH_GREETING = RESPONSE_TEXTS[DEFAULT_LOCALE]["LAUNCH"]
 NO_QUERY_TEXT = RESPONSE_TEXTS[DEFAULT_LOCALE]["NO_QUERY"]
 RATE_LIMIT_FALLBACK = RESPONSE_TEXTS[DEFAULT_LOCALE]["RATE_LIMIT"]
+REPROMPT_TEXT = RESPONSE_TEXTS[DEFAULT_LOCALE]["REPROMPT"]
 GENERIC_ERROR_FALLBACK = get_messages(DEFAULT_LOCALE)["GENERIC_ERROR"]
 QUOTA_EXHAUSTED_FALLBACK = get_messages(DEFAULT_LOCALE)["QUOTA_EXHAUSTED"]
 TIMEOUT_FALLBACK = get_messages(DEFAULT_LOCALE)["TIMEOUT"]
@@ -278,13 +281,20 @@ TIMEOUT_FALLBACK = get_messages(DEFAULT_LOCALE)["TIMEOUT"]
 # ---------------------------------------------------------------------------
 # Alexa response shaping
 # ---------------------------------------------------------------------------
-def alexa_response(speech_text, end_session=False, session_attributes=None):
+def alexa_response(speech_text, end_session=False, session_attributes=None, reprompt_text=None):
     """Shape a minimal valid Alexa Skills Kit response body.
 
     `session_attributes` is only included in the response when not None
     (plan 0005 §3.3) -- every call site that doesn't end the session must
     pass the current conversation history through explicitly (plan §2.6);
     there's no implicit default that does the right thing by omission.
+
+    `reprompt_text` mirrors that discipline for the `reprompt` field
+    (Plan 0002 §10 follow-up (c)): without it, `shouldEndSession: false`
+    opens the mic but Alexa has nothing to say if it doesn't hear
+    anything, so the session times out silently (~8s) instead of
+    re-asking -- indistinguishable from the skill having crashed or
+    exited. Every non-session-ending call site should pass one.
     """
     resp = {
         "version": "1.0",
@@ -295,6 +305,8 @@ def alexa_response(speech_text, end_session=False, session_attributes=None):
     }
     if session_attributes is not None:
         resp["sessionAttributes"] = session_attributes
+    if not end_session and reprompt_text:
+        resp["response"]["reprompt"] = {"outputSpeech": {"type": "PlainText", "text": reprompt_text}}
     return jsonify(resp)
 
 
@@ -733,6 +745,8 @@ def _respond_with_llm(query, locale, current_history):
     echo = session_attributes_from_history(current_history)
     messages = get_messages(locale)
 
+    reprompt = _get_response_text("REPROMPT", locale)
+
     if not check_and_increment_quota():
         return alexa_response(messages["QUOTA_EXHAUSTED"], end_session=True)
 
@@ -740,19 +754,31 @@ def _respond_with_llm(query, locale, current_history):
         speech, updated_history = ask_llm(query, locale=locale, conversation_history=current_history)
     except OpenRouterRateLimited:
         return alexa_response(
-            _get_response_text("RATE_LIMIT", locale), end_session=False, session_attributes=echo
+            _get_response_text("RATE_LIMIT", locale),
+            end_session=False,
+            session_attributes=echo,
+            reprompt_text=reprompt,
         )
     except requests.exceptions.Timeout:
-        return alexa_response(messages["TIMEOUT"], end_session=False, session_attributes=echo)
+        return alexa_response(
+            messages["TIMEOUT"], end_session=False, session_attributes=echo, reprompt_text=reprompt
+        )
     except Exception as exc:  # noqa: broad -- never let anything escape as a 500
         app.logger.exception("LLM call failed (backend=%s): %s", INFERENCE_BACKEND, exc)
-        return alexa_response(messages["GENERIC_ERROR"], end_session=False, session_attributes=echo)
+        return alexa_response(
+            messages["GENERIC_ERROR"], end_session=False, session_attributes=echo, reprompt_text=reprompt
+        )
 
     if not speech:
-        return alexa_response(messages["GENERIC_ERROR"], end_session=False, session_attributes=echo)
+        return alexa_response(
+            messages["GENERIC_ERROR"], end_session=False, session_attributes=echo, reprompt_text=reprompt
+        )
 
     return alexa_response(
-        speech, end_session=False, session_attributes=session_attributes_from_history(updated_history)
+        speech,
+        end_session=False,
+        session_attributes=session_attributes_from_history(updated_history),
+        reprompt_text=reprompt,
     )
 
 
@@ -765,6 +791,7 @@ def _handle_ask_anything(intent, locale, current_history):
             _get_response_text("NO_QUERY", locale),
             end_session=False,
             session_attributes=session_attributes_from_history(current_history),
+            reprompt_text=_get_response_text("REPROMPT", locale),
         )
 
     return _respond_with_llm(query, locale, current_history)
@@ -790,6 +817,7 @@ def _handle_fallback_intent(locale, current_history):
             _get_response_text("NO_QUERY", locale),
             end_session=False,
             session_attributes=session_attributes_from_history(current_history),
+            reprompt_text=_get_response_text("REPROMPT", locale),
         )
 
     return _respond_with_llm(_fallback_continuation_query(locale), locale, current_history)
@@ -844,7 +872,11 @@ def alexa():
             # No session_attributes passed -- deliberate (plan 0005 §2.6
             # table): a new launch starts a fresh conversation, not a
             # continuation of whatever was stored from a prior session.
-            return alexa_response(_get_response_text("LAUNCH", locale), end_session=False)
+            return alexa_response(
+                _get_response_text("LAUNCH", locale),
+                end_session=False,
+                reprompt_text=_get_response_text("REPROMPT", locale),
+            )
 
         if req_type == "SessionEndedRequest":
             return "", 200
@@ -859,6 +891,7 @@ def alexa():
                     _get_response_text("HELP", locale),
                     end_session=False,
                     session_attributes=session_attributes_from_history(current_history),
+                    reprompt_text=_get_response_text("REPROMPT", locale),
                 )
             if intent_name == "AskAnythingIntent":
                 return _handle_ask_anything(intent, locale, current_history)
@@ -868,16 +901,22 @@ def alexa():
                 get_messages(locale)["GENERIC_ERROR"],
                 end_session=False,
                 session_attributes=session_attributes_from_history(current_history),
+                reprompt_text=_get_response_text("REPROMPT", locale),
             )
 
         return alexa_response(
             get_messages(locale)["GENERIC_ERROR"],
             end_session=False,
             session_attributes=session_attributes_from_history(current_history),
+            reprompt_text=_get_response_text("REPROMPT", locale),
         )
     except Exception as exc:  # noqa: broad -- last-resort safety net
         app.logger.exception("Unhandled error in /alexa: %s", exc)
-        return alexa_response(get_messages(locale)["GENERIC_ERROR"], end_session=False)
+        return alexa_response(
+            get_messages(locale)["GENERIC_ERROR"],
+            end_session=False,
+            reprompt_text=_get_response_text("REPROMPT", locale),
+        )
 
 
 if __name__ == "__main__":

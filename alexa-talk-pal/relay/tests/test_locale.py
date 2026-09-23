@@ -238,6 +238,12 @@ class AlexaEndpointLocaleTests(unittest.TestCase):
         self.assertEqual(text, relay_app.RESPONSE_TEXTS["pt_BR"]["LAUNCH"])
         self.assertTrue(_looks_portuguese(text))
 
+    def test_launch_pt_br_reprompt_is_portuguese(self):
+        resp = self._post(self._body("LaunchRequest", "pt-BR"))
+        reprompt = resp.get_json()["response"]["reprompt"]["outputSpeech"]["text"]
+        self.assertEqual(reprompt, relay_app.RESPONSE_TEXTS["pt_BR"]["REPROMPT"])
+        self.assertTrue(_looks_portuguese(reprompt))
+
     def test_launch_missing_locale_defaults_english(self):
         body = self._body("LaunchRequest", None)
         del body["request"]["locale"]

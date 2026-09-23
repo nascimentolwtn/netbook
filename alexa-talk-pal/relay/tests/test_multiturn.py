@@ -316,5 +316,62 @@ class HistoryTrimmingTests(MultiTurnTestCase):
         self.assertEqual(len(data["sessionAttributes"]["conversation_history"]), 12)
 
 
+class RepromptTests(MultiTurnTestCase):
+    """Without a `reprompt`, `shouldEndSession: false` opens the mic but
+    Alexa has nothing to say if it doesn't hear anything -- the session
+    times out silently (~8s) instead of re-asking, indistinguishable from
+    the skill having exited (Plan 0002 §10 follow-up (c)). Every
+    non-session-ending response must carry one; every session-ending
+    response must not."""
+
+    def test_launch_includes_reprompt(self):
+        resp = self.post(_launch_request())
+        data = resp.get_json()
+        self.assertEqual(data["response"]["reprompt"]["outputSpeech"]["text"], relay_app.REPROMPT_TEXT)
+
+    def test_ask_anything_success_includes_reprompt(self):
+        with mock.patch.object(relay_app, "ask_openrouter", return_value="Paris."):
+            resp = self.post(_ask_anything_request("What's the capital of France?"))
+        data = resp.get_json()
+        self.assertEqual(data["response"]["reprompt"]["outputSpeech"]["text"], relay_app.REPROMPT_TEXT)
+
+    def test_no_query_text_includes_reprompt(self):
+        resp = self.post(_ask_anything_request(None))
+        data = resp.get_json()
+        self.assertEqual(data["response"]["reprompt"]["outputSpeech"]["text"], relay_app.REPROMPT_TEXT)
+
+    def test_help_includes_reprompt(self):
+        resp = self.post(_intent_request("AMAZON.HelpIntent"))
+        data = resp.get_json()
+        self.assertEqual(data["response"]["reprompt"]["outputSpeech"]["text"], relay_app.REPROMPT_TEXT)
+
+    def test_fallback_intent_no_history_includes_reprompt(self):
+        resp = self.post(_intent_request("AMAZON.FallbackIntent"))
+        data = resp.get_json()
+        self.assertEqual(data["response"]["reprompt"]["outputSpeech"]["text"], relay_app.REPROMPT_TEXT)
+
+    def test_unrecognized_intent_includes_reprompt(self):
+        resp = self.post(_intent_request("SomeUnknownIntent"))
+        data = resp.get_json()
+        self.assertEqual(data["response"]["reprompt"]["outputSpeech"]["text"], relay_app.REPROMPT_TEXT)
+
+    def test_timeout_fallback_includes_reprompt(self):
+        with mock.patch.object(relay_app, "ask_openrouter", side_effect=requests.exceptions.Timeout()):
+            resp = self.post(_ask_anything_request("q"))
+        data = resp.get_json()
+        self.assertEqual(data["response"]["reprompt"]["outputSpeech"]["text"], relay_app.REPROMPT_TEXT)
+
+    def test_stop_intent_has_no_reprompt(self):
+        resp = self.post(_intent_request("AMAZON.StopIntent"))
+        data = resp.get_json()
+        self.assertNotIn("reprompt", data["response"])
+
+    def test_quota_exhausted_has_no_reprompt(self):
+        with mock.patch.object(relay_app, "check_and_increment_quota", return_value=False):
+            resp = self.post(_ask_anything_request("q"))
+        data = resp.get_json()
+        self.assertNotIn("reprompt", data["response"])
+
+
 if __name__ == "__main__":
     unittest.main()
