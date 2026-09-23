@@ -16,6 +16,7 @@ real deployment — signature verification is the front door lock
 import base64
 import json
 import os
+import re
 import subprocess
 import tempfile
 from datetime import datetime
@@ -58,9 +59,15 @@ DEBUG_SKIP_SIGNATURE = os.environ.get("DEBUG_SKIP_SIGNATURE", "").strip().lower(
 # Backend switch (napkin backlog item 3 / ADR 0013). "openrouter" (default)
 # is the only backend with a fallback model and 429 handling; "local" is a
 # hard switch to the Windows PC llama.cpp server, no fallback between the
-# two. Local needs a bigger max_tokens than OpenRouter -- its hybrid
-# reasoning shares the same token budget as the spoken answer, and 150 was
-# too tight (ADR 0012's follow-up testing).
+# two. Both backends need a bigger max_tokens than a plain chat model --
+# their hybrid reasoning shares the same token budget as the spoken answer.
+# Confirmed live for OPENROUTER_MODEL (liquid/lfm-2.5-2.6b:free): reasoning
+# is mandatory for this model on OpenRouter's free endpoint (its API
+# rejects `reasoning: {enabled: false}` with "Reasoning is mandatory for
+# this endpoint") and consistently burns ~148-150 of a 150-token budget,
+# leaving `content` empty/None (`finish_reason: "length"`). 500 resolved it
+# cleanly (`finish_reason: "stop"`) across several live test queries, same
+# value chosen for the local backend in ADR 0012/0013.
 INFERENCE_BACKEND = os.environ.get("INFERENCE_BACKEND", "openrouter").strip().lower()
 LOCAL_LLM_BASE_URL = os.environ.get(
     "LOCAL_LLM_BASE_URL", "http://192.168.4.55:11434/v1/chat/completions"
@@ -71,14 +78,36 @@ LOCAL_LLM_MAX_TOKENS = int(os.environ.get("LOCAL_LLM_MAX_TOKENS", "500") or "500
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_CONNECT_TIMEOUT = 2
 OPENROUTER_READ_TIMEOUT = 5
-OPENROUTER_MAX_TOKENS = 150
+OPENROUTER_MAX_TOKENS = int(os.environ.get("OPENROUTER_MAX_TOKENS", "500") or "500")
 
 VOICE_SYSTEM_PROMPT = (
     "You are a helpful voice assistant answering a spoken question. "
     "Reply in 2 to 4 short sentences of plain spoken prose. Do not use "
     "markdown, bullet lists, code, emoji, or URLs -- your reply will be "
-    "read aloud exactly as written."
+    "read aloud exactly as written. Only give your final answer -- never "
+    "show your reasoning, thinking, or planning process."
 )
+
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>(.*?)</think>", re.IGNORECASE | re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
+
+
+def _strip_leaked_reasoning(text):
+    """Defensive cleanup for a raw <think>...</think> block leaking into
+    visible `content` -- observed once on the local backend under one
+    llama.cpp config (2026-09-21 CHANGELOG entry), not reproduced against
+    OpenRouter's cleanly-separated `reasoning`/`reasoning_details` fields
+    (which this code never reads as spoken text). Cheap insurance against
+    either backend doing it again. A closed block is removed and whatever
+    follows is kept; an unclosed block (reasoning cut off mid-thought by
+    the token budget, finish_reason="length") has nothing usable after it,
+    so it's treated as empty rather than spoken as a fragment."""
+    if not text:
+        return text
+    text = _THINK_BLOCK_RE.sub("", text).strip()
+    if _THINK_OPEN_RE.search(text):
+        return ""
+    return text
 
 # Timeout / quota-exhausted / generic-error lines come from
 # fallback_messages.py (imported above). Rate limit isn't one of that
@@ -430,20 +459,39 @@ def _call_local_llm(query):
     )
 
 
+def _extract_spoken_text(data):
+    """Pulls the visible answer out of an OpenAI-compatible chat-completions
+    response, strips any leaked reasoning block, and raises ValueError if
+    nothing speakable is left -- e.g. `content` is None/empty because the
+    model spent its whole token budget on mandatory reasoning
+    (`finish_reason: "length"`, see the OPENROUTER_MAX_TOKENS comment
+    above). The caller's generic except turns that into the graceful
+    "couldn't reach my brain" fallback rather than crashing on
+    `None.strip()` or speaking a bare reasoning fragment."""
+    content = data["choices"][0]["message"].get("content")
+    text = _strip_leaked_reasoning(content.strip() if content else content)
+    if not text:
+        raise ValueError(
+            "LLM returned no usable content (finish_reason={!r})".format(
+                data["choices"][0].get("finish_reason")
+            )
+        )
+    return text
+
+
 def ask_openrouter(query):
     """Returns spoken text. Raises OpenRouterRateLimited if both the
     primary and (if configured) fallback model return 429; raises other
-    exceptions (timeouts, HTTP errors, bad JSON shape) for the caller to
-    turn into a graceful fallback -- never lets them escape as a 500
-    (architecture.md §5.3)."""
+    exceptions (timeouts, HTTP errors, bad JSON shape, empty content) for
+    the caller to turn into a graceful fallback -- never lets them escape
+    as a 500 (architecture.md §5.3)."""
     resp = _call_openrouter(OPENROUTER_MODEL, query)
     if resp.status_code == 429 and OPENROUTER_FALLBACK_MODEL:
         resp = _call_openrouter(OPENROUTER_FALLBACK_MODEL, query)
     if resp.status_code == 429:
         raise OpenRouterRateLimited()
     resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"].strip()
+    return _extract_spoken_text(resp.json())
 
 
 def ask_local_llm(query):
@@ -453,8 +501,7 @@ def ask_local_llm(query):
     the same generic exception handling as ask_openrouter (§5.3)."""
     resp = _call_local_llm(query)
     resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"].strip()
+    return _extract_spoken_text(resp.json())
 
 
 def ask_llm(query):
