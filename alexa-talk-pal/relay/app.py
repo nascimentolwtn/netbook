@@ -16,6 +16,8 @@ real deployment — signature verification is the front door lock
 import base64
 import json
 import os
+import subprocess
+import tempfile
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -23,7 +25,7 @@ import requests
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -164,6 +166,14 @@ ECHO_API_CERT_HOST = "s3.amazonaws.com"
 ECHO_API_SAN = "echo-api.amazon.com"
 REQUEST_TIMESTAMP_TOLERANCE_SECONDS = 150
 
+# Root-of-trust anchor (docs/plans/0001, option c2). `cryptography` 2.1.4
+# (ADR 0007) predates the x509.verification path-building API, so the
+# system `openssl` CLI does real RFC 5280 path validation against the
+# system CA bundle instead -- no library/Python upgrade needed.
+SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+OPENSSL_BIN = "openssl"
+OPENSSL_VERIFY_TIMEOUT_SECONDS = 3
+
 # Cached cert chains, keyed by SignatureCertChainUrl. Deliberately not
 # refetched per request (architecture.md §4.2 step 2 / §5.3 latency budget).
 _cert_chain_cache = {}
@@ -179,8 +189,18 @@ def _validate_cert_chain_url(url):
     port = parsed.port or 443
     if port != 443:
         raise SignatureVerificationError("SignatureCertChainUrl port must be 443")
-    # Normalize to guard against a ../ traversal path, then check prefix.
-    normalized_path = os.path.normpath(parsed.path)
+    path = parsed.path
+    # Real Amazon URLs never contain a percent-encoded character or a dot
+    # path segment -- reject both outright rather than trying to decode
+    # and re-normalize safely (docs/plans/0001: an encoded ".." here can
+    # resolve differently depending on the installed urllib3 version).
+    if "%" in path:
+        raise SignatureVerificationError("SignatureCertChainUrl path must not be percent-encoded")
+    segments = path.split("/")
+    if "." in segments or ".." in segments:
+        raise SignatureVerificationError("SignatureCertChainUrl path must not contain a dot segment")
+    # Normalize as a second, redundant layer, then check prefix.
+    normalized_path = os.path.normpath(path)
     if not normalized_path.startswith("/echo.api/"):
         raise SignatureVerificationError("SignatureCertChainUrl path must start with /echo.api/")
 
@@ -205,12 +225,86 @@ def _load_pem_certificates(pem_bytes):
     return certs
 
 
+def _verify_chain_anchor(certs, ca_file=SYSTEM_CA_BUNDLE, at_time=None):
+    """Anchors the chain to a real trust store via the system `openssl`
+    CLI (docs/plans/0001, option c2). ca_file/at_time exist only so tests
+    can point at a throwaway CA and a frozen clock -- production always
+    uses the system bundle and the real current time. Fails closed on any
+    non-zero exit, timeout, or missing openssl binary."""
+    leaf = certs[0]
+    intermediates = certs[1:]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        leaf_path = os.path.join(tmpdir, "leaf.pem")
+        with open(leaf_path, "wb") as f:
+            f.write(leaf.public_bytes(serialization.Encoding.PEM))
+
+        argv = [OPENSSL_BIN, "verify", "-no-CApath", "-CAfile", ca_file]
+        if at_time is not None:
+            argv += ["-attime", str(int(at_time))]
+        if intermediates:
+            untrusted_path = os.path.join(tmpdir, "untrusted.pem")
+            with open(untrusted_path, "wb") as f:
+                for cert in intermediates:
+                    f.write(cert.public_bytes(serialization.Encoding.PEM))
+            argv += ["-untrusted", untrusted_path]
+        argv.append(leaf_path)
+
+        try:
+            result = subprocess.run(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=OPENSSL_VERIFY_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            app.logger.warning("openssl verify could not run: %s", exc)
+            raise SignatureVerificationError("Could not anchor certificate chain to a trusted root")
+
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    if result.returncode != 0 or not stdout.rstrip().endswith(": OK"):
+        app.logger.warning(
+            "openssl verify rejected chain (exit=%s): stdout=%r stderr=%r",
+            result.returncode,
+            stdout,
+            result.stderr.decode("utf-8", errors="replace"),
+        )
+        raise SignatureVerificationError("Certificate chain did not anchor to a trusted root")
+
+
 def _get_cert_chain(url):
     if url in _cert_chain_cache:
         return _cert_chain_cache[url]
-    resp = requests.get(url, timeout=(OPENROUTER_CONNECT_TIMEOUT, OPENROUTER_READ_TIMEOUT))
-    resp.raise_for_status()
+    resp = requests.get(
+        url,
+        timeout=(OPENROUTER_CONNECT_TIMEOUT, OPENROUTER_READ_TIMEOUT),
+        allow_redirects=False,
+    )
+    if resp.status_code != 200:
+        raise SignatureVerificationError(
+            "SignatureCertChainUrl fetch returned status {} (redirects are not followed)".format(
+                resp.status_code
+            )
+        )
+    # Re-check the URL requests will actually put on the wire, not just
+    # the one we parsed (docs/plans/0001: what's sent can differ from
+    # what's parsed depending on the installed urllib3 version).
+    prepared_url = requests.Request("GET", url).prepare().url
+    _validate_cert_chain_url(prepared_url)
+
     certs = _load_pem_certificates(resp.content)
+
+    # Public certs, never secrets -- fine to log in full on every cache miss.
+    app.logger.info("Cert chain cache miss for %s", url)
+    for cert in certs:
+        app.logger.info(
+            "  cert subject=%s issuer=%s not_after=%s sha256=%s",
+            cert.subject,
+            cert.issuer,
+            cert.not_valid_after,
+            cert.fingerprint(hashes.SHA256()).hex(),
+        )
+
+    _verify_chain_anchor(certs)
     _cert_chain_cache[url] = certs
     return certs
 
@@ -232,13 +326,13 @@ def _verify_chain_dates_and_san(certs):
 
 def _verify_chain_signatures(certs):
     # Verifies each cert in the chain was signed by the next cert's key
-    # (leaf -> intermediate -> ...). Note: this checks internal chain
-    # consistency but does not build/validate a path to a locally trusted
-    # Amazon root store -- the `cryptography` version available via apt
-    # (2.1.4, ADR 0007) predates its path-building APIs. Combined with the
-    # SignatureCertChainUrl host/port/path pinning to Amazon's S3 bucket,
-    # per-cert validity-date checks, and the SAN check, this covers the
-    # practical intent of §4.2 within this library's constraints.
+    # (leaf -> intermediate -> ...), proving the file is internally
+    # consistent. Root-of-trust path validation against the system CA
+    # bundle happens separately, in _verify_chain_anchor (docs/plans/0001,
+    # option c2), via the system `openssl` CLI -- `cryptography` 2.1.4
+    # (ADR 0007) predates its own path-building API. This function stays
+    # as defense in depth alongside the URL pinning, validity-date checks
+    # and SAN check.
     for child, issuer in zip(certs, certs[1:]):
         try:
             issuer.public_key().verify(
