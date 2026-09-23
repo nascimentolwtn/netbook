@@ -6,13 +6,35 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 
 ---
 
+## 0. Prerequisites
+
+This plan assumes a working, tested v1 exists. Two things must be true
+before starting, not just "unblocked":
+
+1. **Backlog item 1 (OpenRouter reasoning-leak bug) is fixed.** Closed
+   2026-09-23 — `OPENROUTER_MAX_TOKENS` raised to 500, shared
+   `_strip_leaked_reasoning` helper added, see
+   [ADR 0015](../adr/0015-openrouter-max-tokens-500-plus-reasoning-strip.md)
+   and the CHANGELOG's 2026-09-23 entry. Confirmed done — but re-verify no
+   regression before building on top of it, since this plan's own token
+   budget and latency assumptions depend on that fix holding.
+2. **Phase 3 live Echo testing (Plan 0003) has actually run.** As of this
+   writing, `docs/plans/0003-phase3-live-mvp-test-with-real-echo.md` is
+   still **Status: proposed** — the CHANGELOG confirms Phase 2 + the
+   reasoning-leak fix together only "close out everything blocking" that
+   test, not that it has happened. Locale support is meaningless to build
+   on a v1 that hasn't been confirmed working end-to-end against a real
+   Echo device yet. Run Plan 0003 to completion first.
+
+---
+
 ## 1. Current State Analysis
 
 **Locale Routing Currently:**
 - Alexa console manages one interaction model per locale (both en-US and pt-BR models live in the same skill, independently configured)
 - Amazon's Alexa Services route incoming requests to the appropriate model based on the Echo device's configured language
 - The `/alexa` endpoint receives all requests (both locales) at the same URL
-- Request payload includes `request.locale` field indicating which locale was matched (e.g., `"pt_BR"` or `"en_US"`)
+- Request payload includes `request.locale` field indicating which locale was matched — Alexa sends this **hyphenated**, per BCP-47 (e.g., `"pt-BR"` or `"en-US"`), not underscore-separated. The relay's normalization step (§2.2) needs to expect the hyphenated form as the actual wire format; converting to an underscore internal key (or not) is an implementation choice, but the input format assumption must be correct
 
 **Relay Behavior (Currently English-only):**
 - Hardcoded `VOICE_SYSTEM_PROMPT` (English)
@@ -37,7 +59,7 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 ### 2.1 Alexa Developer Console (Manual)
 - Add pt-BR as a second locale to the existing Skill ID (English Talk Pal)
 - Create a Portuguese-language interaction model with:
-  - **Invocation name:** Portuguese equivalent (e.g., `"assistente conversa"` or `"talk pal"` — invocation names are not typically translated)
+  - **Invocation name:** The skill's invocation name is already fixed at `"english talk pal"` (ADR 0009) for en-US, not the placeholder `"talk pal"` used in an earlier draft of this plan. Decide whether pt-BR reuses that same invocation name (allowed — Alexa supports a different invocation name per locale on the same skill, and reuse is simplest and lowest-risk) or gets a distinct Portuguese phrase (e.g., `"assistente conversa"` — untested for ASR collisions)
   - **Sample utterances:** translated carrier phrases for the `query` slot (e.g., `"fale sobre {query}"`, `"pergunte {query}"`, `"diga {query}"`)
   - **AskAnythingIntent** structure: identical to en-US, only sample utterances differ
   - **Built-in intents:** AMAZON.StopIntent, AMAZON.CancelIntent, AMAZON.HelpIntent (same for all locales)
@@ -54,14 +76,41 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 - Provide a function to get language-specific messages given a locale string
 
 ### 2.4 Configuration (`.env.example` and `.env`)
-- No new env vars strictly required for basic support
-- Optional: add `LOCALE_PREFERENCE` to allow forcing a single locale for testing (default: auto-detect from request)
-- Optional: add `SUPPORTED_LOCALES` list for validation
+- No new env vars required. Locale is always auto-detected from
+  `request.locale`, with a fallback to en_US for anything unrecognized —
+  that already covers the only real failure mode, so there's nothing left
+  for a config toggle to do. Dropped from an earlier draft of this plan:
+  `LOCALE_PREFERENCE` (force a single locale for testing) and
+  `SUPPORTED_LOCALES` (an allow-list) — both are YAGNI, nothing in this
+  plan's scope needs to force or validate locale beyond the existing
+  fallback behavior
 
 ### 2.5 Tests (`relay/tests/`)
 - Add test cases for locale extraction from requests
 - Test fallback message selection for both locales
 - Verify both en-US and pt-BR responses shape correctly
+- Language-compliance test: assert a pt-BR request actually gets a
+  Portuguese-language *response*, not just a request routed to the
+  Portuguese system prompt (see §7 for why these are different checks)
+
+### 2.6 Bilingual Sessions / Mid-Session Locale Switching
+- Alexa doesn't lock a session to one locale server-side. More relevantly,
+  once Plan 0005's multi-turn history exists: if `conversation_history`
+  accumulates turns in one language and the user's device locale differs
+  on a later turn in the same session (device-language change takes effect
+  immediately; a stale session could still be open, or testing could swap
+  between an en-US and pt-BR Echo mid-session), the relay has to decide
+  what happens to that history.
+- **Decision needed:** either (a) clear `conversation_history` whenever the
+  current request's `request.locale` differs from the locale the session
+  started with, or (b) keep history and accept the model may see a prior
+  turn in a different language than the active system prompt. Recommend
+  (a) — simplest, avoids mixed-language context confusing a small free-tier
+  model, and cheap to implement (store the session's starting locale
+  alongside history, compare on each turn).
+- This is only reachable once Plan 0005's history exists; it's documented
+  here because both plans touch `session.attributes` and this is the seam
+  between them (see §11, "Integration with Plan 0005").
 
 ---
 
@@ -106,7 +155,14 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 - **No change:** Inference backend selection is independent of locale.
 
 ### ADR 0011 (Model Choice)
-- **Impact:** Model latency may differ for Portuguese inputs. Recommended: re-run `relay/measure_latency.py` with Portuguese test queries to confirm the chosen model meets the 8s deadline with pt-BR requests.
+- **Impact:** Model latency may differ for Portuguese inputs, on top of an
+  already-tight baseline: ADR 0012 measured OpenRouter free-tier latency at
+  p90 6.08s for English, single-turn, live from the netbook on 2026-09-21 —
+  already close to the 8s deadline before any Portuguese-specific effect is
+  measured. Recommended: re-run `relay/measure_latency.py` with Portuguese
+  test queries (§Phase 0.2) to confirm the chosen model still meets the 8s
+  deadline with pt-BR requests, rather than assuming the earlier English
+  numbers leave comfortable headroom.
 - **Action item:** latency testing step in Phase 0.
 
 ### ADR 0014 (Signature Verification)
@@ -133,9 +189,9 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | **LLM latency with pt-BR inputs** | Medium | Could breach 8s deadline if model is slower with Portuguese; Alexa timeout fails open with "couldn't reach my brain" | Re-measure with `measure_latency.py` using Portuguese queries; confirm model latency headroom in Phase 0 |
-| **Interaction model validation rejects Portuguese samples** | Low | Alexa's validator may have rules specific to English; blocks console configuration | Use existing en-US samples as template; test with 2–3 invocation + carrier combinations; fallback: use two-turn flow if samples fail |
+| **Interaction model validation rejects Portuguese samples** | Low | Alexa's validator may have rules specific to English; blocks console configuration | Use existing en-US samples as template; test with 2–3 invocation + carrier combinations; fallback: use two-turn flow if samples fail (note: this requires `Dialog.ElicitSlot`, which the relay does **not** implement yet — treat it as new work, not a free fallback) |
 | **System prompt quality degrades in Portuguese** | Medium | Model may respond less coherently in Portuguese, or violate "short sentences, no markdown" instruction | Test system prompt with a few live queries in the simulator; iterate on wording if responses are verbose/contain markdown |
-| **Invocation name collision in Portuguese** | Low | Portuguese carrier words (e.g., `"assistente"`) might collide with built-in intents or be hard for Alexa ASR | Test with real Echo ASR recognition; common invocation name patterns exist (`"talk pal"` is language-neutral; sticking with it is safest) |
+| **Invocation name collision in Portuguese** | Low | Portuguese carrier words (e.g., `"assistente"`) might collide with built-in intents or be hard for Alexa ASR | Test with real Echo ASR recognition; the existing en-US invocation name `"english talk pal"` (ADR 0009) is a safe default to reuse for pt-BR too |
 | **Locale not in request payload** | Very Low | Alexa may send requests without `request.locale` in some edge cases | Always default to en_US if locale is absent; log a warning |
 
 ---
@@ -151,10 +207,17 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 - [ ] Confirm both locales share the same Skill ID and endpoint URL
 
 **0.2 LLM latency testing with Portuguese queries**
-- [ ] Run `relay/measure_latency.py` (or equivalent) with 10–15 Portuguese test queries
+- [ ] `measure_latency.py` needs a `--questions-file` flag added first
+      (shared work with Plan 0005's measure_latency.py updates — do it
+      once, not twice) — put the Portuguese queries in a plain text file,
+      one per line, instead of hand-editing the hardcoded `QUERIES` list
+- [ ] Run `relay/measure_latency.py --questions-file <path>` with 10–15 Portuguese test queries
 - [ ] Example queries: `"Por que o céu é azul?"`, `"O que é a fotossíntese?"`, `"Quanto é 2 + 2?"`
 - [ ] Record latency distribution, tail (p95/p99), any 429s or timeouts
-- [ ] Confirm all queries complete under 5s (leaving 3s buffer for the 8s deadline)
+- [ ] Compare against ADR 0012's already-measured English baseline (p90
+      6.08s on OpenRouter free tier, single-turn) instead of assuming a
+      fresh 5s target — that baseline is already tight against the 8s
+      deadline before Portuguese-specific effects are even measured
 - [ ] If latency is unacceptable, consider fallback model options
 
 **0.3 Interaction model structure validation**
@@ -166,10 +229,10 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 - [ ] Draft Portuguese sample utterances based on the en-US model
 - [ ] Create a shell pt-BR interaction model JSON for manual insertion in Phase 2
 
-**0.4 Request locale field validation**
-- [ ] In the console simulator, send a test request from both en-US and a simulated pt-BR locale (if supported)
-- [ ] Confirm the request JSON includes `request.locale` with the expected value (`"en_US"` or `"pt_BR"` or `"pt-BR"`)
-- [ ] If locale field is missing or named differently, document the actual field name
+(Request-locale field validation moved to Phase 2 §2.5 — it needs a real
+pt-BR interaction model in the simulator to test against, which doesn't
+exist until Phase 2 creates it. An earlier draft of this plan placed it
+here in Phase 0, before any pt-BR model existed to test.)
 
 ### Phase 1: Relay Code Refactoring (Day 2–3)
 
@@ -190,8 +253,8 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 
 **1.2 Add locale extraction and routing to relay**
 - [ ] Modify `relay/app.py`:
-  - Add a `_extract_locale(parsed_body) -> str` function that reads `request.locale` from the payload
-  - Normalize locale strings (handle both `"pt_BR"` and `"pt-BR"`)
+  - Add a `_extract_locale(parsed_body) -> str` function that reads `request.locale` from the payload — Alexa sends this hyphenated (`"pt-BR"`, `"en-US"`), so the function must handle that as the primary real-world input, not as one of two equally-likely formats
+  - Normalize locale strings (handle both `"pt_BR"` and `"pt-BR"` as input, converting to whichever internal key format is chosen — normalizing both works fine as long as the hyphenated form is the one actually expected from Alexa)
   - Default to `"en_US"` if missing
   - Store locale in a request context (Flask's `g` object or function parameter)
   
@@ -234,9 +297,10 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 - [ ] Modify both `ask_openrouter` and `ask_local_llm` to accept locale parameter
 
 **1.5 Add test coverage**
-- [ ] In `relay/tests/test_signature.py`, add tests for:
-  - `_extract_locale()` with valid pt_BR, en_US, missing locale
-  - Locale normalization (pt-BR → pt_BR)
+- [ ] In a new `relay/tests/test_locale.py` (not `test_signature.py`, which
+      stays scoped to signature verification), add tests for:
+  - `_extract_locale()` with valid pt-BR, en-US, missing locale
+  - Locale normalization (pt-BR is the real wire format Alexa sends — normalize from that, not the other way around)
   - Fallback to en_US on invalid locale
   - `_get_response_text()` returns correct locale-specific strings
   - Full `/alexa` POST with both locales yields locale-appropriate responses
@@ -261,17 +325,29 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 - [ ] Endpoint URL remains `https://<same-ngrok-hostname>/alexa` (no per-locale URL)
 
 **2.2 Configure the pt-BR interaction model**
-- [ ] **Invocation name:** Keep it simple and language-neutral; `"talk pal"` works across both locales (or choose a Portuguese equivalent if preferred; test ASR first)
-  - Safest option: stick with `"talk pal"` (English phrase, easy to recognize in Portuguese)
-  - Alternative: translate to `"assistente conversa"` or similar (test ASR collision risk)
+- [ ] **Invocation name:** The real en-US invocation name is
+      `"english talk pal"` (ADR 0009) — confirm it in the console before
+      configuring pt-BR, don't assume a placeholder name
+  - Safest option: reuse `"english talk pal"` for pt-BR too (English
+    words, still plausible for Portuguese ASR, zero risk of a second name
+    colliding with something else)
+  - Alternative: translate to `"assistente conversa"` or similar (test ASR collision risk before committing)
 - [ ] **Intents:** Click **JSON Editor** and paste the pt-BR model structure (prepared in Phase 0)
   - **AskAnythingIntent** with `query` slot of type `AMAZON.SearchQuery` (identical structure to en-US)
-  - **Sample utterances** in Portuguese:
+  - **Sample utterances** in Portuguese — avoid leading with question
+    words like "o que é" / "como" as carrier prefixes. The `query` slot
+    already captures the user's full spoken question, which itself often
+    starts with "o que é" or "como" — a template like `"o que é {query}"`
+    either doubles up awkwardly ("o que é o que é a fotossíntese") or
+    trains the interaction model to strip the real question word, similar
+    to the bare-`{query}` sample bug found during Phase 2 console testing
+    on en-US. Prefer neutral leads that don't presuppose the query's
+    grammatical shape:
     - `"fale sobre {query}"`
     - `"me pergunte {query}"`
     - `"diga {query}"`
-    - `"o que é {query}"`
-    - `"como {query}"`
+    - `"quero saber {query}"`
+    - `"pergunta rápida {query}"`
     - Ensure each sample has a carrier word (no bare `{query}`)
   - **Built-in intents:** AMAZON.StopIntent, AMAZON.CancelIntent, AMAZON.HelpIntent (same for all locales)
 
@@ -284,12 +360,23 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 - [ ] Switch to the **Test tab**
 - [ ] At the top, switch language to **Portuguese (Brazil)** (simulator may have a language dropdown)
 - [ ] Send test utterances in Portuguese:
-  - "abra talk pal" → should trigger LaunchRequest → relay responds with Portuguese greeting
+  - "abra english talk pal" → should trigger LaunchRequest → relay responds with Portuguese greeting
   - "por que o céu é azul" → should match AskAnythingIntent + query slot → relay sends to LLM in Portuguese, responds with Portuguese text
   - "ajuda" → should match AMAZON.HelpIntent → relay responds with Portuguese help text
   - "parar" → should match AMAZON.StopIntent → relay responds with Portuguese goodbye
-- [ ] Verify relay logs (on the netbook, `journalctl -u talkpal-relay`) show successful requests with locale pt_BR
+- [ ] Verify relay logs (on the netbook, `journalctl -u talkpal-relay`) show successful requests with locale `pt-BR`
 - [ ] Verify all responses are in Portuguese
+
+**2.5 Request locale field validation** (moved here from Phase 0 — needs
+the pt-BR model just built above to exist)
+- [ ] In the console simulator, send a test request from both en-US and the
+      new pt-BR locale
+- [ ] Confirm the request JSON includes `request.locale` with the expected
+      value — Alexa sends this hyphenated (`"en-US"` / `"pt-BR"`), not
+      underscore-separated; confirm the relay's normalization handles the
+      actual wire format, not an assumed one
+- [ ] If the locale field is missing or named differently than expected,
+      document the actual field name
 
 ### Phase 3: Live Echo Testing (Day 4)
 
@@ -299,14 +386,14 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
   - Or temporarily change a shared Echo's language for testing
 
 **3.2 Live testing with real voice**
-- [ ] "Alexa, talk pal, por que o céu é azul?"
+- [ ] "Alexa, english talk pal, por que o céu é azul?"
 - [ ] Wait for response; confirm:
   - Alexa recognizes the invocation and Portuguese query
-  - Relay receives the request with `locale: "pt_BR"`
+  - Relay receives the request with `locale: "pt-BR"`
   - Response is in Portuguese
   - Voice output uses a Portuguese voice (Alexa automatically selects one)
 - [ ] Test failure modes:
-  - "Alexa, talk pal" with no query → should respond in Portuguese with "didn't catch a question"
+  - "Alexa, english talk pal" with no query → should respond in Portuguese with "didn't catch a question"
   - Trigger quota exhaustion → should respond in Portuguese with quota message
   - Simulate LLM timeout → should respond in Portuguese with timeout fallback
 - [ ] Test language-switching:
@@ -316,7 +403,9 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 
 **3.3 Performance confirmation**
 - [ ] Measure end-to-end latency for 5 English and 5 Portuguese queries
-- [ ] Confirm all queries complete within 5–7s (comfortable margin under 8s deadline)
+- [ ] Compare against ADR 0012's p90 6.08s English baseline — that number
+      already leaves little margin under the 8s deadline, so "5-7s" isn't a
+      safe assumption going in; confirm the real numbers, don't assume them
 - [ ] Log any timeouts or 429s
 
 ### Phase 4: Documentation & Polish (Day 5)
@@ -324,14 +413,25 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 **4.1 Update project documentation**
 - [ ] Update `CHANGELOG.md` to record backlog item 3 completion
 - [ ] Update `README.md` (if it exists) to mention multi-locale support
-- [ ] Add a new ADR (e.g., `0015-multi-locale-pt-br-support.md`) documenting:
+- [ ] Add a new ADR, **`0017-multi-locale-pt-br-support.md`** (numbered
+      0017, not 0015 — ADR 0015 already exists, for the reasoning-leak fix;
+      Plan 0005's multi-turn ADR takes 0016, built first per §11's
+      recommended build order, so this one is 0017) documenting:
   - Decision to add pt-BR as a second locale on the same skill (not a separate skill)
   - Locale extraction from request payload
   - Language-aware system prompts and fallback messages
   - Testing strategy
 
-**4.2 Move backlog item to napkin**
-- [ ] In `.claude/napkin.md`, move the pt-BR item from Backlog to the relevant completed section (or a new "Phase 4 Completed" section if that section doesn't exist yet)
+**4.2 Close out the backlog item**
+- [ ] In `.claude/napkin.md`, remove the pt-BR line from the Backlog
+      section entirely — the napkin's own Curation Rules say the Backlog
+      category holds **open items only**; a completed item never gets a
+      "done" marker left in place there
+- [ ] Add the completed-work entry to `alexa-talk-pal/CHANGELOG.md`
+      instead, dated the day this ships, following the existing entry
+      style (see the 2026-09-22/2026-09-23 CHANGELOG entries for the
+      format: what was found, what was decided, what was verified, and a
+      link to the new ADR)
 
 **4.3 Performance metrics documentation**
 - [ ] In `.claude/napkin.md` Guardrails, add a note:
@@ -351,6 +451,19 @@ This plan extends the alexa-talk-pal ecosystem to support Portuguese (Brazil) al
 - End-to-end POST `/alexa` with simulated en-US request → relay responds in English
 - End-to-end POST `/alexa` with simulated pt-BR request → relay responds in Portuguese
 - Both locales' fallback paths (quota, timeout, generic error) emit language-appropriate responses
+
+### Language-Compliance Test (new — routing correctness isn't language correctness)
+- Confirming the request was routed to the Portuguese system prompt is
+  **not** the same as confirming the model actually replied in Portuguese.
+  Nothing stops a small free-tier model (`liquid/lfm-2.5-2.6b:free`) from
+  answering in English despite a Portuguese system prompt and a Portuguese
+  query — small free-tier models are not reliably instruction-following on
+  language choice.
+- Add an explicit check in the integration/live tests — a heuristic is
+  enough (e.g., presence of common Portuguese stopwords/diacritics,
+  absence of common English stopwords) — that fails the test if a pt-BR
+  request comes back in English, rather than only asserting the request
+  reached the right code path.
 
 ### Live Echo Tests (Phase 3)
 - Real voice commands in both languages
@@ -373,20 +486,24 @@ Based on the codebase architecture, these are the files most critical for implem
    - Portuguese translations of all fallback messages
    - Locale routing function for message selection
 
-3. **`/home/lw_na/git/netbook/alexa-talk-pal/relay/tests/test_signature.py`**
+3. **`/home/lw_na/git/netbook/alexa-talk-pal/relay/tests/test_locale.py`** (new file — `test_signature.py` stays scoped to signature verification only, per its existing content)
    - New test cases for locale extraction and routing
    - Locale-aware message tests
+   - Language-compliance test (§7)
 
 ### Configuration & Documentation
 4. **`/home/lw_na/git/netbook/alexa-talk-pal/.env.example`**
    - Updated documentation of locale support (no new secrets)
 
-5. **`/home/lw_na/git/netbook/alexa-talk-pal/docs/adr/0015-multi-locale-pt-br-support.md`** (new)
+5. **`/home/lw_na/git/netbook/alexa-talk-pal/docs/adr/0017-multi-locale-pt-br-support.md`** (new — numbered 0017; see §4's ADR-numbering note and §11's build order)
    - Architecture decision record for this work
 
-### Alexa Console (Manual, Not in Repo)
+### Alexa Console (Manual, Tracked in Repo)
 - Alexa Developer Console skill configuration (pt-BR locale & interaction model)
-- Interaction model JSON for pt-BR (can be tracked in repo as `docs/alexa-skill/interaction-model-pt-br.json` for reference)
+- Interaction model JSON for pt-BR, tracked at
+  **`/home/lw_na/git/netbook/alexa-talk-pal/alexa/interaction-model.pt-BR.json`**
+  — matching the existing `alexa/interaction-model.json` for en-US, not
+  `docs/alexa-skill/` (that path doesn't match this repo's actual layout)
 
 ---
 
@@ -395,8 +512,8 @@ Based on the codebase architecture, these are the files most critical for implem
 | Scenario | Fallback |
 |---|---|
 | **LLM latency unacceptable with Portuguese queries** | Revert to smaller/different free model; measure again. If no free model works, skip pt-BR in v1 and defer to Phase 5. |
-| **Interaction model validation rejects Portuguese samples** | Switch to two-turn flow for pt-BR (launch → "O que você gostaria de perguntar?" → user responds). Keep en-US as single-shot. |
-| **Echo ASR misses Portuguese invocation name** | Keep invocation name as `"talk pal"` (language-neutral). Test with real Echo before committing. |
+| **Interaction model validation rejects Portuguese samples** | Switch to two-turn flow for pt-BR (launch → "O que você gostaria de perguntar?" → user responds). Keep en-US as single-shot. **Requires implementing `Dialog.ElicitSlot` first — not yet in the relay** (see Plan 0005's follow-up-routing gap, which needs the same primitive); budget for that as new work, not a quick fallback. |
+| **Echo ASR misses Portuguese invocation name** | Keep invocation name as `"english talk pal"` (ADR 0009's actual existing name). Test with real Echo before committing. |
 | **Locale field missing from request in production** | Always default to en_US; log a warning. Non-critical, but report as potential Amazon API issue. |
 | **Console refuses to add second locale** | Confirm account permissions and skill ownership. If truly blocked, create a separate skill for pt-BR (documented trade-off). |
 
@@ -417,12 +534,56 @@ Phase 4 pt-BR support is complete when:
 
 ---
 
-## 11. Integration with Other Phase 4 Items
+## 11. Integration with Plan 0005 (Multi-Turn) — Not Orthogonal
 
-This pt-BR work is **orthogonal** to other Phase 4 candidates:
+An earlier draft of this plan called pt-BR work "orthogonal" to Plan 0005's
+multi-turn conversational work. That was wrong: both plans modify the same
+`app.py` functions, the same interaction-model artifact family, and the
+same `session.attributes` payload once Plan 0005 lands. Building them
+independently risks two incompatible edits landing on the same call sites.
 
-- **Conversational memory (napkin item 2):** Locale-agnostic. Session attributes can store multi-turn context for both English and Portuguese. No interaction.
-- **Progressive response (architecture.md Phase 4):** Locale-agnostic. Interstitial "let me think about that" can be localized separately. No blocker.
-- **Local LLM backend (ADR 0013 follow-up):** Locale-agnostic. LLM input language is independent of backend choice. No blocker.
+### Shared touch points
+- **`ask_llm` / `_call_chat_completions`:** Plan 0005 changes these to
+  accept a message list (history) instead of today's single `query`
+  string. Plan 0004 needs the *system prompt* to vary by locale on every
+  call. The combined signature has to carry both, e.g.
+  `ask_llm(query, locale, conversation_history=None)` — whichever plan
+  lands second must not silently drop the other plan's parameter.
+- **Backends (`ask_openrouter`, `ask_local_llm`):** both need the
+  locale-selected system prompt *and* the trimmed history in the same
+  message list.
+- **`alexa_response`:** Plan 0005 adds a `session_attributes` parameter.
+  Plan 0004 doesn't change this function's shape directly, but every
+  locale-aware response path still has to pass through whatever
+  `alexa_response` becomes.
+- **System prompts:** the combined result is a **per-locale, per-mode**
+  matrix, not a single constant — `VOICE_SYSTEM_PROMPT` (en-US,
+  single-turn) and `CONVERSATIONAL_SYSTEM_PROMPT` (en-US, multi-turn) from
+  Plan 0005, plus pt-BR equivalents of both. Four prompts, not two.
+- **Interaction model:** Plan 0005's follow-up-routing fix (new sample
+  utterances, and/or `Dialog.ElicitSlot`/`AMAZON.FallbackIntent` handling)
+  has to exist in *both* locale models, or pt-BR users get single-turn
+  behavior while en-US users get multi-turn.
+- **Locale-switching mid-session:** see §2.6 above — once history exists
+  (Plan 0005), a locale change mid-session needs an explicit decision on
+  whether it clears history.
 
-All four can be developed in parallel; pt-BR work requires no dependencies on the others.
+### Recommended build order
+1. **Plan 0005 first, English only.** Land the multi-turn plumbing
+   (`conversation.py`, the `session.attributes` round-trip, follow-up
+   routing, and the `ask_llm`/`_call_chat_completions`/`alexa_response`
+   signature changes) against the existing en-US interaction model before
+   touching locale at all — it's the harder, riskier change; isolate it.
+2. **Plan 0004 second, on top of the new signatures.** Add the pt-BR
+   locale, system prompts, fallback messages, and interaction model against
+   the *already-changed* function signatures, instead of both plans racing
+   to change the same lines independently.
+3. Net result: a per-locale, per-mode system prompt matrix (4 prompts), one
+   `ask_llm(query, locale, conversation_history=None)` call site, and a
+   single interaction-model update pass per locale that includes the
+   follow-up-routing fix from day one.
+
+Doing pt-BR first would mean redoing its locale-routing changes once Plan
+0005's signature changes land — net more work than sequencing them this
+way. See Plan 0005 §"Shared Touch Points with Plan 0004" for the mirror of
+this section.
