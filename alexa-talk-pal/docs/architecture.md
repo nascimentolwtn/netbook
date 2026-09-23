@@ -491,7 +491,7 @@ alexa-talk-pal/
 │   └── interaction-model.json   (exported from the dev console, for reproducibility)
 ├── deploy/
 │   ├── talkpal-relay.service
-│   ├── ngrok.service
+│   ├── talkpal-tunnel.service    (ngrok; named to match `systemctl` unit list)
 │   └── ngrok-config.example.yml (authtoken redacted)
 ├── .gitignore                   (*.env, *.json credentials, ngrok.yml)
 └── README.md                    (usage + restore procedure, matching the other components)

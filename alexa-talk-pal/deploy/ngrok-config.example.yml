@@ -1,0 +1,3 @@
+version: "3"
+agent:
+    authtoken: <redacted — set via `ngrok config add-authtoken <token>`, never commit the real value>

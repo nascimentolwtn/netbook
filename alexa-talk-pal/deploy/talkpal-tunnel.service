@@ -1,0 +1,15 @@
+[Unit]
+Description=ngrok tunnel for talkpal-relay (stable domain)
+After=network-online.target talkpal-relay.service
+Wants=network-online.target
+Requires=talkpal-relay.service
+
+[Service]
+Type=simple
+User=netbook
+ExecStart=/usr/local/bin/ngrok http 5040 --url=https://viscous-landlady-reappoint.ngrok-free.dev
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=talkpal-relay Flask app (Alexa <-> OpenRouter relay)
+After=network.target
+
+[Service]
+Type=simple
+User=netbook
+WorkingDirectory=/home/netbook/talkpal-relay
+ExecStart=/home/netbook/talkpal-relay/venv/bin/python3 /home/netbook/talkpal-relay/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
