@@ -23,6 +23,7 @@ this file is the merge of both.
 """
 import base64
 import json
+import logging
 import os
 import re
 import subprocess
@@ -51,6 +52,20 @@ from fallback_messages import get_messages
 load_dotenv()
 
 app = Flask(__name__)
+# Default Flask/root logger level is WARNING, which silently drops every
+# app.logger.info()/.debug() call below (including the pre-existing
+# cert-chain-cache and startup lines). RELAY_LOG_LEVEL (default INFO) is
+# how an operator dials this up without a code change -- set it to DEBUG
+# in .env and restart the service to see the per-request IN/OUT trace
+# lines below; leave it at INFO for normal quiet operation (warnings and
+# exceptions always show regardless, since those are logged at a level
+# above both). journalctl's own `-p` priority filter does NOT do this for
+# free: plain stdout/stderr captured by systemd isn't tagged with each
+# line's Python logging level unless something bridges the two (e.g. the
+# systemd journal handler) -- this app doesn't do that, so verbosity is
+# controlled here, not via `journalctl -p debug`.
+_LOG_LEVEL = getattr(logging, os.environ.get("RELAY_LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
+app.logger.setLevel(_LOG_LEVEL)
 
 # ---------------------------------------------------------------------------
 # Config (env vars — see .env.example)
@@ -307,6 +322,18 @@ def alexa_response(speech_text, end_session=False, session_attributes=None, repr
         resp["sessionAttributes"] = session_attributes
     if not end_session and reprompt_text:
         resp["response"]["reprompt"] = {"outputSpeech": {"type": "PlainText", "text": reprompt_text}}
+
+    # Mirrors the "IN ..." log in alexa() -- every response path returns
+    # through this one function, so this is the single place to log the
+    # outgoing side without touching every call site. Same DEBUG level
+    # and RELAY_LOG_LEVEL gate as the IN line.
+    app.logger.debug(
+        "OUT speech=%r end_session=%s reprompt=%s session_attrs=%s",
+        speech_text,
+        end_session,
+        bool(reprompt_text),
+        session_attributes is not None,
+    )
     return jsonify(resp)
 
 
@@ -867,6 +894,24 @@ def alexa():
         # a new launch always starts fresh, regardless of what's stored.
         session_attrs = (parsed_body.get("session") or {}).get("attributes") or {}
         current_history = trim_conversation_history(extract_conversation_history(session_attrs))
+
+        # Debugging aid (napkin backlog, 2026-09-23): the success path
+        # otherwise logs nothing at all, so a live `journalctl -f` shows
+        # only warnings/exceptions and looks silent even while the skill
+        # is being used normally. DEBUG level (RELAY_LOG_LEVEL=DEBUG to
+        # see it) -- one summary line per request: intent name and query,
+        # not the full raw Alexa payload (device/session IDs, timestamps),
+        # which is noise for this purpose.
+        _intent = (req.get("intent") or {}) if req_type == "IntentRequest" else {}
+        _query = ((_intent.get("slots") or {}).get("query") or {}).get("value")
+        app.logger.debug(
+            "IN type=%s intent=%s locale=%s query=%r history_turns=%d",
+            req_type,
+            _intent.get("name"),
+            locale,
+            _query,
+            len(current_history) // 2,
+        )
 
         if req_type == "LaunchRequest":
             # No session_attributes passed -- deliberate (plan 0005 §2.6
