@@ -9,7 +9,7 @@ All folders are bi-directional (`sendreceive`):
 | Folder | Path | Source Devices |
 |--------|------|---|
 | **Photos_Aline** | `/media/backup/sync_data/Photos_Aline` | Aline's smartphone |
-| **Photos_LW** | `/media/backup/sync_data/Photos_LW` | LW's phone (paused) |
+| **Photos_LW** | `/media/backup/sync_data/Photos_LW` | LW's phone (SM-S731B) |
 | **Photos_Lais** | `/media/backup/sync_data/Photos_Lais` | Lais's smartphone |
 | **Photos_Paty** | `/media/backup/sync_data/Photos_Paty` | Paty's smartphone |
 
@@ -17,7 +17,8 @@ All folders are bi-directional (`sendreceive`):
 
 - **aspire-one** (netbook) — this device, acts as the sync hub
 - **Aline SM-S926B** — syncing actively
-- **LW_Phone** — syncing actively  
+- **SM-S731B** — LW's new phone (migrated via Android clone, 2026-11-17), syncing actively
+- **LW_Phone** — paused (old phone, factory-reset after migration)
 - **LW Samsung 22** — paused (not currently syncing)
 
 ## Configuration
