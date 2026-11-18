@@ -19,6 +19,9 @@ Decisions behind these steps: `alexa-talk-pal/docs/adr/`.
 2. **[2026-09-23] Add Portuguese-BR (pt-BR) language support**
    Do instead: Extend Echo request locale handling and response generation to pt-BR. Affects: Alexa Skill locale routing, LLM prompt language selection, and TTS voice selection if speech output is added. Phase 4 candidate.
 
+3. **[2026-09-23] Research and implement community/open-source approaches to free, Alexa+-style natural conversation**
+   Do instead: Survey how the community builds free LLM-powered assistants that match paid Alexa+'s UX — free-form speech after the wake word instead of rigid command grammar, e.g. a child naturally saying "alexa, pode aumentar o volume" or "alexa, quero assistir o canal TV globo" rather than a fixed phrase. Look at prior art (community custom-skill + catch-all-intent + LLM patterns, openWakeWord, Home Assistant Assist, Rhasspy, etc.) for wake-word handling, natural-language intent routing, and multi-turn UX — then implement the chosen approach, not just report on it. Feeds into and overlaps with backlog item 1's LLM conversational layer; do the research first to pick the pattern, then build it as part of (or immediately alongside) item 1's implementation.
+
 *(Phase 4 polish items — session-memory, progressive response, root README update to a four-app ecosystem, local-LLM-on-PC option — are explicitly optional "only if v1 earns it" per architecture.md §11 Phase 4; not tracked here until Phase 3 ships.)*
 
 ## Domain Behavior Guardrails
